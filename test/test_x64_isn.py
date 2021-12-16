@@ -161,6 +161,31 @@ def test_mov_mem(tmpdir, op64, op8):
     """.format(**locals())
     compare(tmpdir, asm, ["rbx", "rcx", "rdx", "r8"])
 
+def test_mov_mem_to_reg8(tmpdir, op8):
+    asm = """
+        mov eax, 0x12345678
+        mov [{op8}+0x100000], rax
+        ; test bpl
+        push rbp
+        xor ebp, ebp
+        mov bpl, [{op8}+0x100000]
+        mov rbx, rbp
+        pop rbp
+        ; test spl
+        mov rdx, rsp
+        xor rsp, rsp
+        mov spl, [{op8}+0x100001]
+        mov rcx, rsp
+        mov rsp, rdx
+        ; test sil
+        xor rsi, rsi
+        mov sil, [{op8}+0x100002]
+        ; test dil
+        xor rdi, rdi
+        mov dil, [{op8}+0x100003]
+    """.format(**locals())
+    compare(tmpdir, asm, ["rbx", "rcx", "rsi", "rdi"])
+
 def test_mov_mem_reg64_off(tmpdir, op64, op8, op32):
     asm = """
         mov rax, {op64}
@@ -263,6 +288,35 @@ def test_arith_sub_reg16(tmpdir, op16, op16_):
           """.format(**locals())
     compare(tmpdir, asm, ["rax", "of", "sf", "zf", "cf", "pf", "af"])
 
+def test_arith_add_imm8(tmpdir, op32, op8):
+    asm = """
+            mov rax, {op32:#x}
+            add al, {op8:#x}
+          """.format(**locals())
+    compare(tmpdir, asm, ["rax", "of", "sf", "zf", "cf", "pf", "af"])
+
+def test_arith_adc_imm8(tmpdir, op32, op8, x86carryop):
+    asm = """
+            {x86carryop}
+            mov rax, {op32:#x}
+            adc al, {op8:#x}
+          """.format(**locals())
+    compare(tmpdir, asm, ["rax", "of", "sf", "zf", "cf", "pf", "af"])
+
+def test_arith_sub_imm8(tmpdir, op32, op8):
+    asm = """
+            mov rax, {op32:#x}
+            sub al, {op8:#x}
+          """.format(**locals())
+    compare(tmpdir, asm, ["rax", "of", "sf", "zf", "cf", "pf", "af"])
+
+def test_arith_sbb_imm8(tmpdir, op32, op8, x86carryop):
+    asm = """
+            {x86carryop}
+            mov rax, {op32:#x}
+            sbb al, {op8:#x}
+          """.format(**locals())
+    compare(tmpdir, asm, ["rax", "of", "sf", "zf", "cf", "pf", "af"])
 
 def test_arith_carrytop_adc(tmpdir, op32, op32_):
     asm = """
@@ -420,6 +474,14 @@ def test_arith_inc_reg64_32(tmpdir, op64):
           """.format(**locals())
     compare(tmpdir, asm, ["rax", "of", "sf", "zf", "pf", "af"])
 
+def test_arith_xor_reg64_32(tmpdir, op64, op64_):
+    asm = """
+            mov rax, {op64:#x}
+            mov rbx, {op64_:#x}
+            xor eax, ebx
+          """.format(**locals())
+    compare(tmpdir, asm, ["rax", "of", "sf", "zf", "pf"])
+
 ##                                      _
 ##  ___  ___  __ _ _ __ ___   ___ _ __ | |_ ___
 ## / __|/ _ \/ _` | '_ ` _ \ / _ \ '_ \| __/ __|
@@ -496,6 +558,14 @@ the_end:
     """
     x64.compare(tmpdir, asm, ["rsi", "rdi", "rcx", "rdx"])
 
+
+def test_fs_access(tmpdir):
+    asm = """
+        mov rax, 0x12345678abcdef
+        mov [fs:0x8], rax
+        mov rbx, [fs:0x8]
+    """
+    compare(tmpdir, asm, ["rax", "rbx"])
 
 ##  _                          _
 ## | |__  _ __ __ _ _ __   ___| |__
@@ -579,6 +649,14 @@ def test_cond_test_ax16(tmpdir, op16, op16_):
             test ax, {op16_:#x}
           """.format(**locals())
     compare(tmpdir, asm, ["rax", "sf", "zf", "pf"])
+
+def test_cond_test_reg8(tmpdir, op8, op8_):
+    asm = """
+            xor rcx, rcx
+            mov cl, {op8:#x}
+            test cl, {op8_:#x}
+          """.format(**locals())
+    compare(tmpdir, asm, ["rcx", "sf", "zf", "pf"])
 
 def test_cond_test_reg16(tmpdir, op16, op16_):
     asm = """
@@ -738,12 +816,14 @@ def test_push_imm(tmpdir, op64):
 def test_misc_movzx(tmpdir, op32):
     asm = """
             mov eax, {op32:#x}
+            mov esi, {op32:#x}
             mov rbx, 0
             movzx bx, al
             movzx rcx, al
             movzx rdx, ax
+            movzx rdi, sil
           """.format(**locals())
-    compare(tmpdir, asm, ["rax", "rbx", "rcx", "rdx"])
+    compare(tmpdir, asm, ["rax", "rbx", "rcx", "rdx", "rdi"])
 
 def test_misc_movsx(tmpdir, op32):
     asm = """
@@ -781,6 +861,34 @@ def test_misc_xlat(tmpdir, op8):
             xlat
           """.format(**locals())
     compare(tmpdir, asm, ["rax"])
+
+
+def test_bswap(tmpdir, op64):
+    asm = """
+           mov rax, {op64:#x}
+           mov rbx, {op64:#x}
+           mov rsi, {op64:#x}
+           mov r10, {op64:#x}
+           mov r15, {op64:#x}
+           bswap rax
+           bswap rbx
+           bswap rsi
+           bswap r10
+           bswap r15
+         """.format(**locals())
+    compare(tmpdir, asm, ["rax", "rbx", "rsi", "r15"])
+
+def test_bswap_32(tmpdir, op64):
+    asm = """
+           mov rax, {op64:#x}
+           mov rbx, {op64:#x}
+           mov rsi, {op64:#x}
+           bswap eax
+           bswap ebx
+           bswap esi
+         """.format(**locals())
+    compare(tmpdir, asm, ["rax", "rbx", "rsi"])
+
 
 def test_misc_xchg_m64_r64(tmpdir):
     asm = """

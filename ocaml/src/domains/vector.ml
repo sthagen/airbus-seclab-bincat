@@ -1,6 +1,6 @@
 (*
     This file is part of BinCAT.
-    Copyright 2014-2018 - Airbus
+    Copyright 2014-2021 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -145,13 +145,13 @@ sig
     val compare: t -> Asm.cmp -> t -> bool
 
     (** undefine the taint of the given value *)
-    val forget_taint: t -> Taint.Src.id_t -> t
+    val forget_taint_src: t -> Taint.Src.id_t -> t
 
     (** returns the taint value of the given parameter *)
     val get_taint: t -> Taint.t
 
-    (** total order on values. Not related to the partial order used in AI *)
-    val total_order: t -> t -> int
+    (** forget the taint of the given value *)
+    val forget_taint: t -> t
 end
 
 (** signature of vector *)
@@ -248,9 +248,11 @@ sig
     (** returns the taint value of the given parameter *)
     val taint_sources: t -> Taint.t
 
-    (** total order on values. Not related to the partial order used in AI *)
-    val total_order: t -> t -> int
+    (** return the taint of the given argument *)
+    val get_taint: t -> Taint.t
 
+    (** forget the taint of the given argument *)
+    val forget_taint: t -> t
 end
 
 module Make(V: Val) =
@@ -365,10 +367,7 @@ module Make(V: Val) =
       
     let meet v1 v2 = map2 V.meet v1 v2
       
-    let widen v1 v2 =
-      if Z.compare (to_z v1) (to_z v2) <> 0 then
-        raise (Exceptions.Too_many_concrete_elements (Printf.sprintf "vector.widen with different vectors (v1=%s v2=%s)" (to_string v1) (to_string v2)))
-      else v1
+    let widen v1 v2 = map2 V.widen v1 v2
         
     (* common utility to add and sub *)
     let core_add_sub op v1 v2 =
@@ -397,7 +396,7 @@ module Make(V: Val) =
         v
           
           
-    let lt_core v1 v2 final =
+    let lt_core v1 v2 final is_signed =
       let lv1 = Array.length v1 in
       let lv2 = Array.length v2 in
       if lv1 <> lv2 then
@@ -411,18 +410,25 @@ module Make(V: Val) =
             | Some b -> b
             | None -> rec_lt v1 v2 (i+1)
         in
-        let res = rec_lt v1 v2 0 in
-        L.debug2 (fun p -> p "lt_core %s %s %s = %b"
-          (to_string v1) (if final then "<=" else "<")
-          (to_string v2) res);
-        res
+        (* check whether v1 and v2 have the same sign *)
+        if not is_signed then
+          rec_lt v1 v2 0
+        else
+          (* correct as the comparison is performed only on bit values and not their taints, 
+             see Reduced_bit_taing.compare *)
+          if V.compare v1.(0) Asm.EQ v2.(0) then
+            rec_lt v1 v2 0
+          else
+            (* signs are different *)
+            V.is_one v1.(0)
           
-    let lt v1 v2 = lt_core v1 v2 false
-    let leq v1 v2 = lt_core v1 v2 true
-    let gt v1 v2 = lt v2 v1
-    let geq v1 v2 = leq v2 v1
+    let lt v1 v2 is_signed = lt_core v1 v2 false is_signed
+    let leq v1 v2 is_signed = lt_core v1 v2 true is_signed
+    let gt v1 v2 = lt v2 v1 false
+    let geq v1 v2 is_signed = leq v2 v1 is_signed
 
     let compare v1 op v2 =
+      L.debug2 (fun p -> p "compare %s %s %s" (to_string v1) (Asm.string_of_cmp op) (to_string v2));
       if (Array.length v1) != (Array.length v2) then
         L.abort (fun p -> p "BAD Vector.compare(%s,%s,%s) len1=%i len2=%i"
           (to_string v1) (Asm.string_of_cmp op) (to_string v2)
@@ -430,10 +436,12 @@ module Make(V: Val) =
       match op with
       | Asm.EQ  -> for_all2 (fun b1 b2 -> V.compare b1 op b2) v1 v2
       | Asm.NEQ -> exist2 (fun b1 b2 -> V.compare b1 op b2) v1 v2
-      | Asm.LT -> lt v1 v2
-      | Asm.LEQ -> leq v1 v2
+      | Asm.LT -> lt v1 v2 false
+      | Asm.LEQ -> leq v1 v2 false
       | Asm.GT -> gt v1 v2
-      | Asm.GEQ -> geq v1 v2
+      | Asm.GEQ -> geq v1 v2 false
+      | Asm.LTS -> lt v1 v2 true
+      | Asm.GES -> geq v1 v2 true
          
     let add v1 v2 =
       let res = core_add_sub V.add v1 v2 in
@@ -638,7 +646,7 @@ module Make(V: Val) =
             let rem = ref v1 in
             for i = !msb1 downto 0 do
               let sv2 = ishl v2_ext i in
-              if geq !rem sv2 then
+              if geq !rem sv2 false then
                 begin
                   rem := sub !rem sv2;
                   quo.(lv1-i-1) <- V.one;
@@ -803,7 +811,7 @@ module Make(V: Val) =
            let get_byte s i = (Z.of_string_base 16 (String.sub s (i/4) 1)) in
            for i = 0 to n' do           
              if Z.testbit m i then
-               let v' = V.forget_taint v.(n'-i) tid in
+               let v' = V.forget_taint_src v.(n'-i) tid in
                if is_first then
                  v.(n'-i) <- v'
                else
@@ -862,7 +870,7 @@ module Make(V: Val) =
                else
                  v.(n'-i) <- V.taint_logor v.(n'-i) v'
              else
-               let v' = V.forget_taint v.(n'-i) tid in
+               let v' = V.forget_taint_src v.(n'-i) tid in
                if is_first then
                  v.(n'-i) <- v' 
                else
@@ -945,25 +953,9 @@ module Make(V: Val) =
         let taint_sources v =
           Array.fold_left (fun acc elt -> Taint.logor acc (V.get_taint elt)) (Taint.U) v
 
-        let same_sign n1 n2 = (n1 = 0 && n2 = 0) || (n1 * n2 > 0)
-                            
-        let total_order v1 v2 =
-          let sz1 = Array.length v1 in
-          let sz2 = Array.length v2 in
-          let n = sz1 - sz2 in
-          if n<> 0 then n
-          else
-            let ret = ref (V.total_order v1.(0) v2.(0)) in
-            try
-              for i = 1 to sz1-1 do
-                let n = V.total_order v1.(i) v2.(i) in
-                if not (same_sign n !ret) then
-                  begin
-                    ret := n;
-                    raise Exit
-                  end
-              done;
-              !ret
-            with Exit -> 0
+        let get_taint = taint_sources
 
+        let forget_taint v =
+          Array.map (V.update_taint Taint.TOP) v       
+          
     end: T)

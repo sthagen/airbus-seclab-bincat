@@ -1,6 +1,6 @@
 (*
     This file is part of BinCAT.
-    Copyright 2014-2018 - Airbus
+    Copyright 2014-2021 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -22,19 +22,13 @@ module L = Log.Make(struct let name = "unrels" end)
 module Make(D: Unrel.T) =
   struct
     module U = Unrel.Make(D)
-    module USet = Set.Make(
-                      struct
-                        type t = U.t * (Log.msg_id_t list) (* be careful: the list is supposed to be a stack *)
-                        let compare (u1, l1) (u2, l2) =
-                          let n = U.total_order u1 u2 in
-                          if n<> 0 then n
-                          else Log.compare_msg_id_list l1 l2                     
-                      end)
+    type ut = U.t * Log.History.t
+
     type t =
       | BOT
-      | Val of USet.t 
+      | Val of ut list
 
-    let init () = Val (USet.singleton (U.empty, []))
+    let init () = Val [U.empty, Log.History.new_ [] ""]
                 
     let bot = BOT
             
@@ -47,14 +41,14 @@ module Make(D: Unrel.T) =
       match m with
       | BOT -> raise (Exceptions.Empty (Printf.sprintf "unrel.value_of_register:  environment is empty; can't look up register %s" (Register.name r)))
       | Val m' ->
-         let v = USet.fold (fun (u, _) prev ->
+         let v = List.fold_left (fun prev (u, _) ->
                      let v' = U.value_of_register u r in
                      match prev with
                      | None -> Some v'
                      | Some v ->
                         if Z.compare v v' = 0 then prev
                         else imprecise_exn r
-                   ) m' None
+                   ) None m'
          in
            match v with
            | None -> imprecise_exn r
@@ -64,46 +58,44 @@ module Make(D: Unrel.T) =
     let string_of_register m r =
       match m with
       | BOT ->  raise (Exceptions.Empty (Printf.sprintf "string_of_register: environment is empty; can't look up register %s" (Register.name r)))
-      | Val m' -> USet.fold (fun (u, _) acc -> (U.string_of_register u r)^acc) m' ""
+      | Val m' -> List.fold_left (fun acc (u, _) -> (U.string_of_register u r)^acc) "" m'
 
     let forget m =
       match m with
       | BOT -> BOT
-      | Val m' -> Val (USet.map (fun (u, ids) -> U.forget u, ids) m')
+      | Val m' -> Val (List.map (fun (u, ids) -> U.forget u, ids) m')
 
     let is_subset m1 m2 =
       match m1, m2 with
       | BOT, _ -> true
       | _, BOT -> false
       | Val m1', Val m2' ->
-         USet.for_all (fun (u2, ids2) ->
-             USet.exists (fun (u1, ids1) -> U.is_subset u1 u2 && Log.compare_msg_id_list ids1 ids2 = 0) m1') m2'
+         List.for_all (fun (u1, _ids2) ->
+             List.exists (fun (u2, _ids1) -> U.is_subset u1 u2) m2') m1'
 
     let remove_register r m =
       match m with
-      | Val m' -> Val (USet.map (fun (u, ids) -> U.remove_register r u, ids) m')
+      | Val m' -> Val (List.map (fun (u, ids) -> U.remove_register r u, ids) m')
       | BOT -> BOT
 
     let forget_lval lv m check_address_validity =
        match m with
       | BOT -> BOT
-      | Val m' -> Val (USet.map (fun (u, ids) -> U.forget_lval lv u check_address_validity, ids) m')
+      | Val m' -> Val (List.map (fun (u, ids) -> U.forget_lval lv u check_address_validity, ids) m')
                 
-    let add_register r m =
+    let add_register r m w =
       match m with
-      | BOT -> Val (USet.singleton (U.add_register r U.empty, []))
-      | Val m' -> Val (USet.map (fun (u, ids) -> U.add_register r u, ids) m')
+      | BOT -> BOT
+      | Val m' -> Val (List.map (fun (u, id) -> U.add_register r u w, id) m')
 
     let to_string m id =
       match m with
       | BOT    -> ["_"]
       | Val m' ->
-         fst (USet.fold (fun (u, msg_ids) (acc, id') ->
-                  let msg =
-                    List.fold_left (fun acc' msg_id -> (Log.get_msg_from_id msg_id)^", "^acc') "" msg_ids
-                  in
-                  (Printf.sprintf "\n[node %d - unrel %d]\ndescription =  %s" id id' msg)::((U.to_string u)@acc), id'+1
-                ) m' ([], 0)) 
+         List.fold_left (fun acc (u, id') ->
+                              let msg = Log.History.get_msg id' in
+                              (Printf.sprintf "\n[node %d - unrel %d]\ndescription =  %s" id id' msg)::((U.to_string u)@acc)
+                             ) [] m'
 
     let imprecise_value_of_exp e =
       raise (Exceptions.Too_many_concrete_elements (Printf.sprintf "concretisation of expression %s is too much imprecise" (Asm.string_of_exp e true)))
@@ -111,14 +103,14 @@ module Make(D: Unrel.T) =
     let value_of_exp m e check_address_validity =
       match m with
       | BOT -> raise (Exceptions.Empty "unrels.value_of_exp: environment is empty")
-      | Val m' -> let v = USet.fold (fun (u, _) prev ->
+      | Val m' -> let v = List.fold_left (fun prev (u, _) ->
                      let v' = U.value_of_exp u e check_address_validity in
                      match prev with
                      | None -> Some v'
                      | Some v ->
                         if Z.compare v v' = 0 then prev
                         else imprecise_value_of_exp e
-                   ) m' None
+                   ) None m'
          in
            match v with
            | None -> imprecise_value_of_exp e
@@ -128,32 +120,32 @@ module Make(D: Unrel.T) =
     (* auxiliary function that will join all set elements *)
     let merge m =
       L.info2 (fun p -> p "threshold on unrel number is exceeded: merging all the unrels into one (join)");
-      let ulist = USet.elements m in
-      match ulist with
-      | [] -> USet.empty
-      | u::tl -> USet.singleton (List.fold_left (fun acc (u, _) -> U.join acc u) (fst u) tl, [])
+      match m with
+      | [] -> []
+      | u::tl ->
+         let u', pred = List.fold_left (fun (u', pred) (u, id) -> U.join u' u, id::pred) (fst u, [snd u]) tl in
+         [u', Log.History.new_ pred "merge"]
+                           
                
     let set dst src m check_address_validity: (t * Taint.Set.t) =
+      L.debug2 (fun p -> p "set %s <- %s" (Asm.string_of_lval dst true) (Asm.string_of_exp src true));
       match m with
       | BOT    -> BOT, Taint.Set.singleton Taint.BOT
       | Val m' ->
          let bot = ref false in
-         let mres, t = USet.fold (fun (u, msg) (m', t) ->
+         let mres, t = List.fold_left (fun (m', t) (u, msg) ->
                            try
-                             let u', t' = U.set dst src u check_address_validity in                             
-                             USet.add (u', msg) m', Taint.Set.add t' t
+                             let u', t' = U.set dst src u check_address_validity in
+                             (u', Log.History.new_ [msg] "")::m', Taint.Set.add t' t
                            with _ ->
                              bot := true;
-                         m', t) m' (USet.empty, Taint.Set.empty)
+                             m', t)  ([], Taint.Set.empty) m'
          in
-         let card = USet.cardinal mres in
+         let card = List.length mres in
          if !bot && card = 0 then
-           BOT, Taint.Set.singleton Taint.BOT
+             BOT, Taint.Set.singleton Taint.BOT
          else
-           if card > !Config.kset_bound then
-             Val (merge mres), Taint.Set.singleton (Taint.Set.fold Taint.logor t Taint.U)
-           else
-             Val mres, t
+           Val mres, t
          
   
                
@@ -163,34 +155,52 @@ module Make(D: Unrel.T) =
       | Val m' ->
          let m' =
            (* check if resulting size would not exceed the kset bound *)
-           if (USet.cardinal m') + (List.length addrs) > !Config.kset_bound then
+           if (List.length m') + (List.length addrs) > !Config.kset_bound then
                merge m'
            else m'
          in
          let taint = ref (Taint.Set.singleton Taint.U) in
          let m2 =
-           List.fold_left (fun acc (a, msg_id) ->
+           List.fold_left (fun acc (a, msg) ->
                let m' =
-                 USet.map (fun (u, prev_msg_id) ->
-                     let u', t = U.set_lval_to_addr lv a u check_address_validity in
+                 List.map (fun (u, prev_id) ->
+                     let u', t = U.set_lval_to_addr lv a u check_address_validity in                     
                      taint := Taint.Set.add t !taint;
-                     u', msg_id::prev_msg_id) m'
+                     let id = Log.History.new_ [prev_id] msg in
+                     u', id) m'
                in
-               USet.union acc m'
-             ) USet.empty addrs
+               acc @ m'
+             ) [] addrs
          in
          Val m2, !taint
 
   
-         
+    let remove_duplicates m1 m2 =
+      let one_check ulist (u, id) =
+        if List.exists (fun (u', _id') -> U.is_subset u' u && U.is_subset u u') ulist then
+          ulist
+        else
+          (u, id)::ulist
+      in
+      let filter m =
+        match m with
+        | [] -> []
+        | v1::tl -> List.fold_left one_check [v1] tl
+      in
+      let m1' = filter m1 in
+      let m2' = filter m2 in
+      List.fold_left one_check m1' m2'
+      
     let join m1 m2 =
       match m1, m2 with
       | BOT, m | m, BOT -> m
-      | Val m1', Val m2' ->
-         let m = USet.union m1' m2' in
+      | Val m1, Val m2 ->
+         let m1' = List.map (fun (m, id) -> m, Log.History.new_ [id] "") m1 in
+         let m2' = List.map (fun (m, id) -> m, Log.History.new_ [id] "") m2 in
+         let m = remove_duplicates m1' m2' in
          (* check if the size of m exceeds the threshold *)
-         if USet.cardinal m > !Config.kset_bound then
-           Val (USet.union (merge m1' ) (merge m2'))
+         if List.length m > !Config.kset_bound then
+           Val (merge (m1'@m2'))
          else
            Val m
 
@@ -198,7 +208,11 @@ module Make(D: Unrel.T) =
       let bot = ref false in
       let add_one_meet m u1 u2 =
         try
-          USet.add (U.meet (fst u1) (fst u2), []) m
+          let u' = U.meet (fst u1) (fst u2) in
+          if List.exists (fun (u, _) -> U.is_subset u' u && U.is_subset u u') m then m
+          else
+            let id = Log.History.new_ [snd u1; snd u2] "meet" in
+              (u', id)::m
         with Exceptions.Empty _ ->
           bot := true;
           m
@@ -207,12 +221,9 @@ module Make(D: Unrel.T) =
       | BOT, _ | _, BOT -> BOT
       | Val m1', Val m2' ->
          let m' =
-           USet.fold (fun u1 m' ->
-               let mm = USet.fold (fun u2 m -> (add_one_meet m u1 u2)) m2' USet.empty in
-               USet.union mm m'
-             ) m1' USet.empty
+           List.fold_left (fun m' u1 -> List.fold_left (fun m u2 -> (add_one_meet m u1 u2)) m' m2') [] m1'
          in
-         let card = USet.cardinal m' in
+         let card = List.length m' in
          if card > !Config.kset_bound then
            Val (merge m')
          else
@@ -222,18 +233,18 @@ module Make(D: Unrel.T) =
            else
              Val m'
 
-    let widen m1 m2 =
-      match m1, m2 with
+    let widen prev_m m =
+      L.analysis (fun p -> p "************************ widening ************\n\n\n");
+      match prev_m, m with
       | BOT, m | m, BOT  -> m
-      | Val m1', Val m2' ->
-         let mm1 = merge m1' in
-         let mm2 = merge m2' in
-         let u' =
-           match USet.elements mm1, USet.elements mm2 with
-               | [], _ | _, [] -> U.empty
-               | (u1, _)::_, (u2, _)::_ -> U.widen u1 u2
-         in
-         Val (USet.singleton (u', []))
+      | Val prev_m', Val m' ->
+         let mm1 = merge prev_m' in
+         let mm2 = merge m' in
+         match mm1, mm2 with
+         | [], _ | _, [] -> Val ([])
+         | (u1, id1)::_, (u2, id2)::_ ->
+            Val ([U.widen u1 u2, Log.History.new_ [id1 ; id2] "widen"])
+
 
             
     let fold_on_taint m f =
@@ -241,9 +252,9 @@ module Make(D: Unrel.T) =
       | BOT -> BOT,  Taint.Set.singleton Taint.BOT
       | Val m' ->
          let m', t' =
-           USet.fold (fun (u, msgs) (m, t) ->
+           List.fold_left (fun (m, t) (u, id)  ->
                let u', t' = f u in
-               USet.add (u', msgs) m, Taint.Set.add t' t) m' (USet.empty, Taint.Set.singleton Taint.U)
+               (u', id)::m, Taint.Set.add t' t) ([], Taint.Set.singleton Taint.U) m'
          in
          Val m', t'
          
@@ -264,21 +275,23 @@ module Make(D: Unrel.T) =
 
     let span_taint_to_addr a t m = fold_on_taint m (U.span_taint_to_addr a t)
 
+    let taint_lval lv taint m check_address_validity = fold_on_taint m (U.taint_lval lv taint check_address_validity)
+                              
     let compare m check_address_validity e1 op e2 =
       L.debug2 (fun p -> p "compare: %s %s %s" (Asm.string_of_exp e1 true) (Asm.string_of_cmp op) (Asm.string_of_exp e2 true));
       match m with
       | BOT -> BOT, Taint.Set.singleton Taint.BOT
       | Val m' ->
          let bot = ref false in
-         let mres, t = USet.fold (fun (u, msgs) (m', t) ->
-                        try
-                          let ulist', tset' = U.compare u check_address_validity e1 op e2 in
-                          List.fold_left (fun m' u -> USet.add (u, msgs) m') m' ulist', Taint.Set.singleton tset'
-                          with Exceptions.Empty _ ->
-                            bot := true;
-                            m', t) m' (USet.empty, Taint.Set.singleton Taint.U) 
+         let mres, t = List.fold_left (fun (m', t) (u, msgs) ->
+                           try                            
+                             let ulist', tset' = U.compare u check_address_validity e1 op e2 in
+                             List.fold_left (fun  m' u -> (u, msgs)::m') m' ulist', Taint.Set.singleton tset'
+                           with Exceptions.Empty _ ->
+                             bot := true;
+                             m', t) ([], Taint.Set.singleton Taint.U) m'
          in
-         let card = USet.cardinal mres in
+         let card = List.length mres in
          if !bot && card = 0 then
            BOT, Taint.Set.singleton Taint.BOT
          else
@@ -288,32 +301,33 @@ module Make(D: Unrel.T) =
              Val mres, t
 
     let mem_to_addresses m e check_address_validity =
+      L.debug2 (fun p -> p "mem_to_addresses %s" (Asm.string_of_exp e true));
       match m with
       | BOT -> raise (Exceptions.Empty (Printf.sprintf "Environment is empty. Can't evaluate %s" (Asm.string_of_exp e true)))
       | Val m' ->
-         USet.fold (fun u (addrs, t) ->
+         List.fold_left (fun (addrs, t) u ->
              try
                let addrs', t' = U.mem_to_addresses (fst u) e check_address_validity in
                Data.Address.Set.union addrs addrs', Taint.Set.add t' t
-             with _ -> addrs, t) m' (Data.Address.Set.empty, Taint.Set.singleton Taint.U)
+             with _ -> addrs, t) (Data.Address.Set.empty, Taint.Set.singleton Taint.U) m' 
 
     let taint_sources e m check_address_validity =
       match m with
       | BOT -> Taint.Set.singleton Taint.BOT
-      | Val m' ->  USet.fold (fun u t -> Taint.Set.add (U.taint_sources e (fst u) check_address_validity) t) m' (Taint.Set.singleton Taint.U)
+      | Val m' ->  List.fold_left (fun t u -> Taint.Set.add (U.taint_sources e (fst u) check_address_validity) t) (Taint.Set.singleton Taint.U) m'
 
     let get_offset_from e cmp terminator upper_bound sz m check_address_validity =
         match m with
       | BOT -> raise (Exceptions.Empty "Unrels.get_offset_from: environment is empty")
       | Val m' ->
          let res =
-           USet.fold (fun u o ->
+           List.fold_left (fun o u ->
                let o' = U.get_offset_from e cmp terminator upper_bound sz (fst u) check_address_validity in
                match o with
                | None -> Some o'
                | Some o ->
                   if o = o' then Some o
-                  else raise (Exceptions.Empty "Unrels.get_offset_from: different offsets found")) m' None
+                  else raise (Exceptions.Empty "Unrels.get_offset_from: different offsets found")) None m'
          in
          match res with
          | Some o -> o
@@ -324,7 +338,7 @@ module Make(D: Unrel.T) =
       | BOT -> raise (Exceptions.Empty "Unrels.get_bytes: environment is empty")
       | Val m' ->
          let res =
-           USet.fold (fun u acc ->
+           List.fold_left (fun acc u ->
              let len, bytes = U.get_bytes e cmp terminator upper_bound sz (fst u) check_address_validity in
              match acc with
              | None -> Some (len, bytes)
@@ -336,7 +350,7 @@ module Make(D: Unrel.T) =
                     raise (Exceptions.Empty "Unrels.get_bytes: incompatible set of bytes to return")
                 else
                   raise (Exceptions.Empty "Unrels.get_bytes: incompatible set of bytes to return")       
-             ) m' None
+             ) None m'
          in
          match res with
          | Some r -> r
@@ -344,14 +358,14 @@ module Make(D: Unrel.T) =
 
     let copy m dst arg sz check_address_validity =
       match m with
-      | Val m' -> Val (USet.map (fun (u, msg) -> U.copy u dst arg sz check_address_validity, msg) m')
+      | Val m' -> Val (List.map (fun (u, msg) -> U.copy u dst arg sz check_address_validity, msg) m')
       | BOT -> BOT
 
     let copy_hex m dst src nb capitalise pad_option word_sz check_address_validity =
       match m with
       | Val m' ->
          let m, n =
-           USet.fold (fun (u, msg) (acc, n) ->
+           List.fold_left (fun (acc, n) (u, msg) ->
                let u', n' = U.copy_hex u dst src nb capitalise pad_option word_sz check_address_validity in
                let nn =
                  match n with
@@ -360,8 +374,8 @@ module Make(D: Unrel.T) =
                     if n = n' then Some n' 
                     else raise (Exceptions.Empty "diffrent lengths of  bytes copied in Unrels.copy_hex")
                in
-               USet.add (u', msg) acc, nn
-             ) m' (USet.empty, None)
+               (u', msg)::acc, nn
+             )  ([], None) m'
          in
          begin
            match n  with
@@ -369,51 +383,93 @@ module Make(D: Unrel.T) =
            | None -> raise (Exceptions.Empty "uncomputable length of  bytes copied in Unrels.copy_hex")
          end
       | BOT -> BOT, 0
+
+    let copy_int m dst src nb capitalise pad_option word_sz check_address_validity =
+      match m with
+      | Val m' ->
+         let m, n =
+           List.fold_left (fun (acc, n) (u, msg) ->
+               let u', n' = U.copy_int u dst src nb capitalise pad_option word_sz check_address_validity in
+               let nn =
+                 match n with
+                 | None -> Some n'
+                 | Some n  ->
+                    if n = n' then Some n' 
+                    else raise (Exceptions.Empty "diffrent lengths of  bytes copied in Unrels.copy_int")
+               in
+               (u', msg)::acc, nn
+             )  ([], None) m'
+         in
+         begin
+           match n  with
+           | Some n' -> Val m, n'
+           | None -> raise (Exceptions.Empty "uncomputable length of  bytes copied in Unrels.copy_int")
+         end
+      | BOT -> BOT, 0
              
     let print m arg sz check_address_validity =
       match m with
-      | Val m' -> USet.iter (fun (u, _) -> U.print u arg sz check_address_validity) m'; m
+      | Val m' -> List.iter (fun (u, _) -> U.print u arg sz check_address_validity) m'; m
       | BOT -> Log.Stdout.stdout (fun p -> p "_"); m
 
     let print_hex m src nb capitalise pad_option word_sz check_address_validity =
       match m with
       | BOT -> Log.Stdout.stdout (fun p -> p "_"); m, raise (Exceptions.Empty "Unrels.print_hex: environment is empty")
       | Val m' ->
-         match USet.elements m' with
+         match m' with
          | [(u, msg)] ->
             let u', len = U.print_hex u src nb capitalise pad_option word_sz check_address_validity in
-            Val (USet.singleton (u', msg)), len
+            Val ([u', msg]), len
+         | _ -> raise (Exceptions.Too_many_concrete_elements "U.print_hex: implemented only for one unrel only")
+
+    let print_int m src nb capitalise pad_option word_sz check_address_validity =
+      match m with
+      | BOT -> Log.Stdout.stdout (fun p -> p "_"); m, raise (Exceptions.Empty "Unrels.print_int: environment is empty")
+      | Val m' ->
+         match m' with
+         | [(u, msg)] ->
+            let u', len = U.print_int u src nb capitalise pad_option word_sz check_address_validity in
+            Val ([u', msg]), len
          | _ -> raise (Exceptions.Too_many_concrete_elements "U.print_hex: implemented only for one unrel only")
 
     let copy_until m dst e terminator term_sz upper_bound with_exception pad_options check_address_validity =
        match m with
        | BOT -> 0, BOT
        | Val m' ->
-          match USet.elements m' with
+          match m' with
           | [(u, msg)] ->
              let len, u' = U.copy_until u dst e terminator term_sz upper_bound with_exception pad_options check_address_validity in
-             len, Val (USet.singleton (u', msg))
+             len, Val ([u', msg])
          | _ -> raise (Exceptions.Too_many_concrete_elements "U.copy_until: implemented only for one unrel only")
 
     let print_until m e terminator term_sz upper_bound with_exception pad_options check_address_validity =
       match m with
        | BOT -> Log.Stdout.stdout (fun p -> p "_"); 0, BOT
        | Val m' ->
-          match USet.elements m' with
+          match m' with
           | [(u, msg)] ->
              let len, u' = U.print_until u e terminator term_sz upper_bound with_exception pad_options check_address_validity in
-             len, Val (USet.singleton (u', msg))
+             len, Val ([u', msg])
           | _ -> raise (Exceptions.Too_many_concrete_elements "U.print_until: implemented only for one unrel only")
 
     let copy_chars m dst src nb pad_options check_address_validity =
       match m with
       | BOT -> BOT
-      | Val m' -> Val (USet.map (fun (u, msg) -> U.copy_chars u dst src nb pad_options check_address_validity, msg) m')
+      | Val m' -> Val (List.map (fun (u, msg) -> U.copy_chars u dst src nb pad_options check_address_validity, msg) m')
 
     let print_chars m src nb pad_options check_address_validity =
       match m with
-      | Val m' -> Val (USet.map (fun (u, msg) -> U.print_chars u src nb pad_options check_address_validity, msg) m')
-      | BOT -> Log.Stdout.stdout (fun p -> p "_"); BOT
+      | BOT ->
+         Log.Stdout.stdout (fun p -> p "_");
+         BOT, 0
+         
+      | Val ([u, msg]) ->
+         let u', len = U.print_chars u src nb pad_options check_address_validity in
+         Val ([u', msg]), len
+
+      | _ -> raise (Exceptions.Too_many_concrete_elements "U.print_chars: implemented only for one unrel only")
+         
+     
 
     let copy_register r dst src =
       match src with
@@ -422,13 +478,19 @@ module Make(D: Unrel.T) =
            let dst' =
              match dst with
              | Val dst' -> dst'
-             | BOT -> USet.empty
+             | BOT -> []
            in
-           Val (USet.fold (fun (u1,  msg1) acc ->
-                    let acc' = USet.map (fun (u2, _) -> U.copy_register r u1 u2, msg1) src' in
-                    USet.union acc' acc)
-                  dst' USet.empty)
+           Val (List.fold_left (fun acc (u1,  msg1) ->
+                    let acc' = List.map (fun (u2, _) -> U.copy_register r u1 u2, msg1) src' in
+                    acc' @ acc)
+                  [] dst' )
          end
       | BOT -> BOT
-              
+
+    let get_taint v m check_address_validity =
+      match m with
+      | BOT -> Taint.BOT
+      | Val m' -> List.fold_left (fun prev_t (u, _log) ->
+                      let t = U.get_taint v u check_address_validity in
+                    Taint.join prev_t t) Taint.U m'
   end

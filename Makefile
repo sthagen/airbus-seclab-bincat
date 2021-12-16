@@ -1,7 +1,7 @@
 export DESTDIR=/
 export PREFIX=usr/local
 
-PYTHON	   ?=python2
+PYTHON	   ?=python3
 PYPATH	   =python
 NPKPATH    =lib
 MLPATH	   =ocaml/src
@@ -31,7 +31,7 @@ install: all
 	make -C $(PYPATH) install
 
 IDAuser:
-	@echo "Linking pybincat and idabincat inside IDA Python ...................."
+	@echo "Copying pybincat and idabincat inside IDA Python ...................."
 	rm -rf "${IDAUSR}/plugins/pybincat"
 	mkdir -p "${IDAUSR}/plugins"
 	cp -r python/pybincat "${IDAUSR}/plugins/pybincat"
@@ -71,8 +71,7 @@ clean:
 dist: clean
 	@echo "Making distribution.................................................."
 	mkdir bincat-dist
-	cp Makefile bincat-dist
-	cp README.md bincat-dist
+	cp Makefile README.md CHANGELOG bincat-dist
 	cp -r python bincat-dist
 	cp -r ocaml bincat-dist
 	cp -r doc bincat-dist
@@ -90,9 +89,9 @@ else
 	cp ocaml/src/bincat.exe "$(distdir)/bin"
 	cp -r python/build/lib/ "$(distdir)/python"
 	cp -r python/idabincat/conf/ "$(distdir)/python/idabincat"
-	mkdir "$(distdir)"/python/idabincat/lib
+	mkdir -p "$(distdir)"/python/idabincat/lib
 	cp -r lib/*.no "$(distdir)/python/idabincat/lib"
-	cp -r python/install_plugin.py README.md doc "$(distdir)"
+	cp -r python/install_plugin.py README.md CHANGELOG doc "$(distdir)"
 	# On azure, do not zip or delete $(distdir)
 ifeq ($(BUILD_BUILDID),)
 	zip -r "$(distdir).zip" "$(distdir)"
@@ -111,9 +110,9 @@ lindist: clean all
 	cp -r python/idabincat/conf/ "$(distdir)/python/idabincat"
 	mkdir "$(distdir)/python/idabincat/lib"
 	cp -r lib/*.no "$(distdir)/python/idabincat/lib"
-	cp -r python/install_plugin.py README.md doc "$(distdir)"
+	cp -r python/install_plugin.py README.md CHANGELOG doc "$(distdir)"
 	# On azure, do not zip or delete $(distdir)
-ifeq ($(AZURE_BUILD),)
+ifeq ($(CI_BUILD),)
 	tar cvJf "$(distdir).tar.xz" "$(distdir)"
 	-rm -rf "$(distdir)"
 endif

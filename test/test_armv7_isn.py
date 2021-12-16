@@ -1,6 +1,6 @@
 import pytest
 import os
-from util import ARM,Thumb
+from util import ARM,Thumb,ThumbU
 
 arm = ARM(
     os.path.join(os.path.dirname(os.path.realpath(__file__)),'armv7.ini.in')
@@ -11,6 +11,11 @@ thumb = Thumb(
     os.path.join(os.path.dirname(os.path.realpath(__file__)),'armv7thumb.ini.in')
 )
 tcompare = thumb.compare
+
+thumbu = ThumbU(
+    os.path.join(os.path.dirname(os.path.realpath(__file__)),'armv7thumb.ini.in')
+)
+tucompare = thumbu.compare
 
 @pytest.fixture()
 def cmpall():
@@ -66,6 +71,20 @@ def test_mov_reg(tmpdir):
             mov r3, r0, lsr #1
     """
     compare(tmpdir, asm, ["r0","r1", "r2", "r3", "z", "n"])
+
+def test_movt(tmpdir, op16):
+    asm = """
+            mov r8, #0
+            movt r8, #{op16}
+    """.format(**locals())
+    compare(tmpdir, asm, ["r8"])
+
+def test_movw(tmpdir, op16):
+    asm = """
+            movw r8, #{op16}
+    """.format(**locals())
+    compare(tmpdir, asm, ["r8"])
+
 
 @dataop_mov
 def test_shifted_register_lsl_imm_shift(tmpdir, op, armv7op, armv7shift):
@@ -219,6 +238,15 @@ def test_data_proc_arith_no_carry(tmpdir, op, armv7op, armv7op_):
     compare(tmpdir, asm, ["r0","r1", "r2", "r3", "n", "z", "c", "v"])
 
 @dataop_comp_arith
+@pytest.mark.xfail # not implemented yet
+def test_data_proc_arith_imm(tmpdir, op, armv7op, armv7op_):
+    asm = """
+            mov r0, #{armv7op}
+            {op}.w r1, r0, #{armv7op_}
+    """.format(**locals())
+    tucompare(tmpdir, asm, ["r0","r1"])
+
+@dataop_comp_arith
 def test_data_proc_arith_no_carry2(tmpdir, op, armv7op, armv7op_):
     asm = """
             mov r0, #{armv7op}
@@ -279,7 +307,7 @@ def test_data_proc_test_arith(tmpdir, op, armv7op, armv7op_):
     compare(tmpdir, asm, ["r0","r1", "n", "z", "c", "v"])
 
 
-@pytest.mark.parametrize("flags", range(15))
+@pytest.mark.parametrize("flags", list(range(15)))
 def test_data_proc_msr_cpsr_reg(tmpdir,flags):
     asm = """
             mov r0, #{flags:#x}0000000
@@ -287,14 +315,14 @@ def test_data_proc_msr_cpsr_reg(tmpdir,flags):
     """.format(**locals())
     compare(tmpdir, asm, ["n", "z", "v", "c"])
 
-@pytest.mark.parametrize("flags", range(15))
+@pytest.mark.parametrize("flags", list(range(15)))
 def test_data_proc_msr_cpsr_imm(tmpdir,flags):
     asm = """
             msr cpsr, #{flags:#x}0000000
     """.format(**locals())
     compare(tmpdir, asm, ["n", "z", "v", "c"])
 
-@pytest.mark.parametrize("flags", range(15))
+@pytest.mark.parametrize("flags", list(range(15)))
 def test_data_proc_mrs_cpsr(tmpdir,flags):
     asm = """
             mov r0, #{flags:#x}0000000
@@ -312,6 +340,59 @@ def test_data_proc_read_pc(tmpdir):
             sub r2, pc, lr, lsl r1
     """
     compare(tmpdir, asm, ["r0", "r1", "r2"])
+
+
+##  __  __ ___ ___ ___   _     ___ ___ _  _
+## |  \/  | __|   \_ _| /_\   |_ _/ __| \| |
+## | |\/| | _|| |) | | / _ \   | |\__ \ .` |
+## |_|  |_|___|___/___/_/ \_\ |___|___/_|\_|
+
+
+def test_media_ubfx(tmpdir, armv7op, op5_couple, request):
+    op5,op5_ = op5_couple
+    asm = """
+          mov r2, #{armv7op}
+          ubfx r3, r2, #{op5}, #{op5_}
+    """.format(**locals())
+    compare(tmpdir, asm, ["r2", "r3"])
+
+
+@pytest.mark.parametrize("opcode", ["uxtb", "uxth", "uxtb16",
+                                    "sxtb", "sxth", "sxtb16"])
+def test_media_uxtb_uxth_uxtb16_sxtb_sxth_sxtb16(tmpdir, opcode, armv7op):
+    asm = """
+            mov r1, #{armv7op}
+            {opcode} r2, r1, ror #0
+            {opcode} r3, r1, ror #8
+            {opcode} r4, r1, ror #16
+            {opcode} r5, r1, ror #24
+    """.format(**locals())
+    compare(tmpdir, asm, ["r1", "r2", "r3", "r4", "r5",])
+
+
+@pytest.mark.parametrize("opcode", ["uxtab", "uxtah", "uxtab16",
+                                    "sxtab", "sxtah", "sxtab16"])
+def test_media_uxtab_uxtah_uxtab16_sxtab_sxtah_sxtab16(tmpdir, opcode, armv7op, armv7op_):
+    asm = """
+            mov r0, #{armv7op}
+            mov r1, #{armv7op_}
+            {opcode} r2, r0, r1, ror #0
+            {opcode} r3, r0, r1, ror #8
+            {opcode} r4, r0, r1, ror #16
+            {opcode} r5, r0, r1, ror #24
+    """.format(**locals())
+    compare(tmpdir, asm, ["r0", "r1", "r2", "r3", "r4", "r5",])
+
+
+def test_media_pkhtb_pkhbt(tmpdir, armv7op, armv7op_, op5):
+    asm = """
+            mov r0, #{armv7op}
+            mov r1, #{armv7op_}
+            pkhbt r2, r0, r1, lsl #{op5}
+            pkhtb r3, r0, r1, asr #{op5}
+    """.format(**locals())
+    compare(tmpdir, asm, ["r0", "r1", "r2", "r3"])
+
 
 
 ##  ___   _ _____ _    __  _____ ___ ___ 
@@ -704,7 +785,7 @@ def test_swap_swap_byte_same_reg(tmpdir):
     compare(tmpdir, asm, ["r0", "r1", "r2"])
 
 
-@pytest.mark.parametrize("flags", range(15))
+@pytest.mark.parametrize("flags", list(range(15)))
 @pytest.mark.parametrize("cc", condition_codes)
 def test_cond(tmpdir, flags, cc):
     asm = """

@@ -1,6 +1,6 @@
 (*
     This file is part of BinCAT.
-    Copyright 2014-2018 - Airbus
+    Copyright 2014-2021 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -46,8 +46,8 @@ module type T =
       (** forget the value of the given lvalue (ie set to top) *)
       val forget_lval: Asm.lval -> t -> t
 
-      (** add the given register to the given abstract value *)
-      val add_register: Register.t -> t -> t
+      (** add the given register to the given abstract value with an optional initial value *)
+      val add_register: Register.t -> t -> Data.Word.t option -> t
 
       (** string conversion. The int parameter is an id to be added to the generated string *)
       val to_string: t -> int -> string list
@@ -67,8 +67,8 @@ module type T =
       Returns also the taint of the given expression *)
       val set: Asm.lval -> Asm.exp -> t -> t * Taint.Set.t
 
-      (** set the given left value to the given list of addresses. The asssociated Log.msg_id_t refers to a short message explaining the meaning of thes address *)
-      val set_lval_to_addr: Asm.lval -> (Data.Address.t * Log.msg_id_t)  list -> t -> t * Taint.Set.t
+      (** set the given left value to the given list of addresses. The asssociated string a short message explaining the origin of these addresses *)
+      val set_lval_to_addr: Asm.lval -> (Data.Address.t * string) list -> t -> t * Taint.Set.t
         
       (** joins the two abstract values *)
       val join: t -> t -> t
@@ -90,6 +90,11 @@ module type T =
       (** apply the given taint mask to the given register. The computed taint is also returned *)
       val taint_register_mask: Register.t -> Config.tvalue -> t -> t * Taint.Set.t
 
+      (** applies the given taint to the given lvalue *)
+      val taint_lval: Asm.lval -> Taint.t -> t -> t * Taint.Set.t
+
+     
+        
       (** apply the given taint to the given register *)
       val span_taint_to_register: Register.t -> Taint.t -> t -> t * Taint.Set.t
 
@@ -139,10 +144,13 @@ module type T =
 number of copied bytes is returned *)
       val copy_hex: t -> Asm.exp -> Asm.exp -> int -> bool -> (char * bool) option -> int -> t * int
 
+      val copy_int: t -> Asm.exp -> Asm.exp -> int -> bool -> (char * bool) option -> int -> t * int
+
         (** [print_hex d arg sz is_hex pad_char pad_left word_sz] copy the first sz bits of arg into stdout. May raise an exception if dst is undefined in d or arg cannot be concretised; If is_hex is true then letters are capitalized ; pad_char is the character to pad if sz <> !Config.operand_sz / 8 ; padding is done on the left if pad_left is true otherwise it is padded on the right. Returns also the number of printed bytes *)
       val print_hex: t -> Asm.exp -> int -> bool -> (char * bool) option -> int -> t * int
 
-
+      val print_int: t -> Asm.exp -> int -> bool -> (char * bool) option -> int -> t * int
+        
     (** [copy_until d dst arg term term_sz bound with_exception pad_options] copy the bits of arg into address dst until the first occurence of term is found into arg. This occurence may be at most at address [arg+bound] raise an exception if the with_exception=true and upper bound is exceeded of dst is undefined in d
     it returns also the number of copied bits. If the length to copy is shorter than the specified bound and pad_options is Some (pad_char, pad_left) then it is left padded with pad_char if pad_left=true itherwise it is right padded *)
       val copy_until: t -> Asm.exp -> Asm.exp -> Asm.exp -> int -> int -> bool -> (char * bool) option -> int * t
@@ -158,7 +166,7 @@ number of copied bytes is returned *)
     (** [print_chars d src nb pad_options]
       print src until nb bytes are copied or null byte is found. If it found before nb bytes
       are copied then if pad_options = Some (pad_char, pad_left) it is padded with the char pad_char on the left if pad_left = true otherwise on the right *)
-      val print_chars: t -> Asm.exp -> int -> (char * bool) option -> t
+      val print_chars: t -> Asm.exp -> int -> (char * bool) option -> t * int
 
       (** [copy_register r dst src] returns dst with value of register r being replaced by its value in src *)
       val copy_register: Register.t -> t -> t -> t
@@ -171,5 +179,8 @@ number of copied bytes is returned *)
 
       (** [deallocate d addrs] weake allocate the heap memory chunks at addresses addrs *)
       val weak_deallocate: t -> Data.Address.heap_id_t list -> t
+
+                                                                 (** return the taint of the given left value *)
+        val get_taint: Asm.lval -> t -> Taint.t
     end
 

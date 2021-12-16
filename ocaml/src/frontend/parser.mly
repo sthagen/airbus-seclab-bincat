@@ -1,6 +1,6 @@
 (*
     This file is part of BinCAT.
-    Copyright 2014-2018 - Airbus
+    Copyright 2014-2021 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -75,10 +75,23 @@
     List.iter (fun (k, kname) -> Hashtbl.add x86_mandatory_keys k (kname, false)) x86_mandatory_items;;
 
     let x64_mandatory_keys = Hashtbl.create 20;;
+    List.iter (fun (k, kname) -> Hashtbl.add x64_mandatory_keys k (kname, false)) [
+      (SS, "ss");
+      (DS, "ds");
+      (CS, "cs");
+      (ES, "es");
+      (FS, "fs");
+      (GS, "gs");
+      (GDT, "gdt");
+      (FS_BASE, "fs_base");
+      (GS_BASE, "gs_base");
+      ];;
+
     let armv7_mandatory_keys = Hashtbl.create 20;;
     let armv8_mandatory_keys = Hashtbl.create 20;;
     let powerpc_mandatory_keys = Hashtbl.create 20;;
-
+    let riscV_mandatory_keys = Hashtbl.create 20;;
+    
       (** set the corresponding option reference *)
       let update_boolean optname opt v =
         match String.uppercase_ascii v with
@@ -98,16 +111,16 @@
          Hashtbl.replace tbl key (kname, true);;
 
       let update_x86_mandatory key = update_arch_mandatory_key x86_mandatory_keys key;;
-      let _update_x64_mandatory key = update_arch_mandatory_key x64_mandatory_keys key;;
+      let update_x64_mandatory key = update_arch_mandatory_key x64_mandatory_keys key;;
       let _update_armv7_mandatory key = update_arch_mandatory_key armv7_mandatory_keys key;;
       let _update_armv8_mandatory key = update_arch_mandatory_key armv8_mandatory_keys key;;
       let _update_powerpc_mandatory key = update_arch_mandatory_key powerpc_mandatory_keys key;;
 
       (** check that the version matches the one we support *)
       let check_ini_version input_version =
-    let supported_version = 4 in
-    if input_version != supported_version then
-      L.abort (fun p->p "Invalid configuration version: '%d', expected: '%d'" input_version supported_version);;
+        let supported_version = 4 in
+        if input_version != supported_version then
+          L.abort (fun p->p "Invalid configuration version: '%d', expected: '%d'" input_version supported_version);;
 
       (** footer function *)
       let check_context () =
@@ -121,6 +134,7 @@
             | Config.ARMv7 -> Hashtbl.iter (fun _ (pname, b) -> if not b then missing_item pname "ARMv7") armv7_mandatory_keys
             | Config.ARMv8 -> Hashtbl.iter (fun _ (pname, b) -> if not b then missing_item pname "ARMv8") armv8_mandatory_keys
             | Config.POWERPC -> Hashtbl.iter (fun _ (pname, b) -> if not b then missing_item pname "POWERPC") powerpc_mandatory_keys
+            | Config.RV32I | Config.RV64I -> Hashtbl.iter (fun _ (pname, b) -> if not b then missing_item pname "RV32I/64I") riscV_mandatory_keys
           end;
         (* fill the table of tainting rules for each provided library *)
         let add_tainting_rules l (c, funs) =
@@ -140,7 +154,7 @@
           List.iter add (List.rev funs)
         in
         Hashtbl.iter add_tainting_rules libraries;
-    (* complete the table of function rules with type information *)
+        (* complete the table of function rules with type information *)
         List.iter (fun header ->
         try
           L.debug (fun p -> p "Open npk file [%s]" header);
@@ -148,21 +162,25 @@
           List.iter (fun (s, f) ->
             L.debug (fun p -> p "  - loaded type for [%s]" s);
         Hashtbl.add Config.typing_rules s f.TypedC.function_type) p.TypedC.function_declarations
-        with e -> L.exc e (fun p -> p "failed to load header %s" header)) !npk_headers
+        with e -> L.exc e (fun p -> p "failed to load header %s" header)) !npk_headers;
+      (* update the os type *)
+        if !Config.format = Config.PE then
+          Config.os := Config.Windows
     ;;
 
     %}
 %token EOF LEFT_SQ_BRACKET RIGHT_SQ_BRACKET EQUAL REG MEM STAR AT
-%token CALL_CONV CDECL FASTCALL STDCALL AAPCS MEM_MODEL MEM_SZ OP_SZ STACK_WIDTH
-%token ANALYZER INI_VERSION UNROLL FUN_UNROLL DS CS SS ES FS GS FLAT SEGMENTED STATE
+%token CALL_CONV CDECL FASTCALL STDCALL AAPCS RISCV MEM_MODEL MEM_SZ OP_SZ STACK_WIDTH
+%token ANALYZER INI_VERSION UNROLL FUN_UNROLL DS CS SS ES FS GS FS_BASE GS_BASE FLAT SEGMENTED STATE
 %token FORMAT RAW MANUAL PE ELF ELFOBJ ENTRYPOINT FILEPATH MASK MODE REAL PROTECTED
 %token LANGLE_BRACKET RANGLE_BRACKET LPAREN RPAREN COMMA UNDERSCORE
 %token GDT CUT ASSERT IMPORTS CALL U T STACK HEAP SEMI_COLON PROGRAM
 %token ANALYSIS FORWARD_BIN FORWARD_CFA BACKWARD STORE_MCFA IN_MCFA_FILE OUT_MCFA_FILE HEADER
 %token OVERRIDE TAINT_NONE TAINT_ALL SECTION SECTIONS LOGLEVEL ARCHITECTURE X86 ARMV7 ARMV8
 %token ENDIANNESS LITTLE BIG EXT_SYM_MAX_SIZE NOP LOAD_ELF_COREDUMP FUN_SKIP KSET_BOUND
-%token POWERPC SVR SYSV MS PROCESSOR_VERSION NULL X64 LOAD_PE_CRASHDUMP
-%token IGNORE_UNKNOWN_RELOCATIONS
+%token POWERPC SVR SYSV MS PROCESSOR_VERSION NULL X64 LOAD_PE_CRASHDUMP RV32I RV64I
+%token IGNORE_UNKNOWN_RELOCATIONS OS WINDOWS LINUX IDA TAINT_INPUT
+%token MPX ENABLED DISABLED
 %token <string> STRING
 %token <string> HEX_BYTES
 %token <string> HEAP_HEX_BYTES
@@ -196,6 +214,9 @@
     | LEFT_SQ_BRACKET X86 RIGHT_SQ_BRACKET x=x86_section     { x }
     | LEFT_SQ_BRACKET X64 RIGHT_SQ_BRACKET x=x64_section     { x }
     | LEFT_SQ_BRACKET POWERPC RIGHT_SQ_BRACKET x=powerpc_section     { x }
+    | LEFT_SQ_BRACKET RV32I RIGHT_SQ_BRACKET x=rv32i_section     { x }
+    | LEFT_SQ_BRACKET RV64I RIGHT_SQ_BRACKET x=rv64i_section     { x }
+    | LEFT_SQ_BRACKET IDA RIGHT_SQ_BRACKET x=ida_section     { x }
 
     overrides:
     |                     { () }
@@ -287,7 +308,10 @@
     }
     | MEM_SZ EQUAL i=INT         {
       update_mandatory MEM_SZ;
-      try Config.address_sz := Z.to_int i
+      try
+        Config.address_sz := Z.to_int i;
+        Config.address_format := Printf.sprintf "%%0%ix" ((Z.to_int i)/4);
+        Config.address_format0x := Printf.sprintf "%%#0%ix" ((Z.to_int i)/4+2)
       with _ -> L.abort (fun p -> p "illegal address size: [%s]" (Z.to_string i))
     }
     | STACK_WIDTH EQUAL i=INT    {
@@ -299,7 +323,9 @@
     | ARCHITECTURE EQUAL a=architecture  { update_mandatory ARCHITECTURE; Config.architecture := a }
     | FILEPATH EQUAL f=QUOTED_STRING     { update_mandatory FILEPATH; Config.binary := f }
     | FORMAT EQUAL f=format      { update_mandatory FORMAT; Config.format := f }
-    | NULL EQUAL v=INT { Config.null_cst := v}
+    | NULL EQUAL v=INT { Config.null_cst := v }
+    | OS EQUAL s=os_kind { Config.os := s }
+    | MPX EQUAL b=mpx_enabled { Config.mpx := b }
 
       format:
     | PE  { Config.PE }
@@ -315,7 +341,8 @@
     | AAPCS    { Config.AAPCS }
     | SVR      { Config.SVR }
     | SYSV     { Config.SYSV }
-    | MS      { Config.MS }
+    | MS       { Config.MS }
+    | RISCV    { Config.RISCVI }
 
     mmode:
     | PROTECTED { Config.Protected }
@@ -327,21 +354,31 @@
     | ARMV7 { Config.ARMv7 }
     | ARMV8 { Config.ARMv8 }
     | POWERPC { Config.POWERPC }
-
-    x86_section:
-    | s=x86_item                { s }
-    | s=x86_item ss=x86_section { s; ss }
+    | RV32I { Config.RV32I }
+    | RV64I { Config.RV64I }
+        
+    x64_section:
+    | s=x64_item                { s }
+    | s=x64_item ss=x64_section { s; ss }
 
     x64_item:
-    | CS EQUAL i=init            { update_x86_mandatory CS; init_register "cs" i }
-    | DS EQUAL i=init            { update_x86_mandatory DS; init_register "ds" i }
-    | SS EQUAL i=init            { update_x86_mandatory SS; init_register "ss" i }
-    | ES EQUAL i=init            { update_x86_mandatory ES; init_register "es" i }
-    | FS EQUAL i=init            { update_x86_mandatory FS; init_register "fs" i }
-    | GS EQUAL i=init            { update_x86_mandatory GS; init_register "gs" i }
-    | GDT LEFT_SQ_BRACKET i=INT RIGHT_SQ_BRACKET EQUAL v=INT { update_x86_mandatory GDT; Hashtbl.replace Config.gdt i v }
+    | CS EQUAL i=init            { update_x64_mandatory CS; init_register "cs" i }
+    | DS EQUAL i=init            { update_x64_mandatory DS; init_register "ds" i }
+    | SS EQUAL i=init            { update_x64_mandatory SS; init_register "ss" i }
+    | ES EQUAL i=init            { update_x64_mandatory ES; init_register "es" i }
+    | FS EQUAL i=init            { update_x64_mandatory FS; init_register "fs" i }
+    | GS EQUAL i=init            { update_x64_mandatory GS; init_register "gs" i }
+    | FS_BASE EQUAL i=init       { update_x64_mandatory FS_BASE; init_register "fs_base" i }
+    | GS_BASE EQUAL i=init       { update_x64_mandatory GS_BASE; init_register "gs_base" i }
+    | GDT LEFT_SQ_BRACKET i=INT RIGHT_SQ_BRACKET EQUAL v=INT { update_x64_mandatory GDT; Hashtbl.replace Config.gdt i v }
 
+    os_kind:
+    | WINDOWS { Config.Windows }
+    | LINUX { Config.Linux }
 
+    mpx_enabled:
+    | ENABLED { true }
+    | DISABLED { false }
     memmodel:
     | FLAT  { Config.Flat }
     | SEGMENTED { Config.Segmented }
@@ -358,6 +395,15 @@
     | ENDIANNESS EQUAL e=endianness { Config.endianness := e }
     | PROCESSOR_VERSION EQUAL v=INT { Config.processor_version := (Z.to_int v) }
 
+    rv32i_section:
+    | { () }
+
+    rv64i_section:
+    | { () }
+
+    ida_section:
+    | STRING EQUAL STRING { () }
+
     endianness:
     | LITTLE { Config.LITTLE }
     | BIG { Config.BIG }
@@ -365,7 +411,7 @@
     armv8_section:
     |  { () }
 
-    x64_section:
+    x86_section:
     |  { () }
     | s=x86_item                { s }
     | s=x86_item ss=x86_section { s; ss }
@@ -403,6 +449,7 @@
     | STORE_MCFA EQUAL v=STRING      { update_mandatory STORE_MCFA; update_boolean "store_mcfa" Config.store_mcfa v }
     | HEADER EQUAL npk_list=npk { npk_headers := npk_list }
     | IGNORE_UNKNOWN_RELOCATIONS EQUAL b=STRING { update_boolean "ignore_unknown_relocations" Config.ignore_unknown_relocations b }
+    | TAINT_INPUT EQUAL b=STRING { update_boolean "taint_input" Config.taint_input b}
 
       analysis_kind:
     | FORWARD_BIN  { Config.Forward Config.Bin }

@@ -4,11 +4,13 @@
 * ocaml >= 4.03 / check that type value = long in the include header caml/mlvalues.h (compiled with -fPIC for amd-64)
 * cppo
 * ocamlfind
+* ocamlgraph 1.8
+* num (for ocaml >= 4.06)
 * zarith library >=1.4
 * python 2.7
 * pytest for tests
 * ocamldoc for the ocaml documentation generation
-* python2-sphinx for the python documentation generation
+* python3-sphinx for the python documentation generation
 * menhir for the configuration parsing in ocaml
 * the ocamlgraph library
 * IDA >= 7.0 (for the plugin)
@@ -19,8 +21,18 @@ All these dependencies except IDA are usually packaged by linux distributions.
 ##### on Debian Sid:
 ```
 apt install ocaml menhir ocaml-findlib libzarith-ocaml-dev \
-  libocamlgraph-ocaml-dev python-setuptools python-dev \
-  ocaml-compiler-libs libppx-tools-ocaml-dev cppo
+  libocamlgraph-ocaml-dev python3-setuptools python3-dev \
+  ocaml-compiler-libs libppx-tools-ocaml-dev cppo libnum-ocaml-dev
+```
+
+to run tests:
+
+```
+apt install gcc-powerpc-linux-gnu gcc-arm-linux-gnueabi \
+  gcc-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+  gcc-riscv64-linux-gnu qemu qemu-user nasm \
+  libc6-dev-arm64-cross libc6-dev-armel-cross libc6-dev-riscv64-cross \
+  libc6-dev-powerpc-cross 
 ```
 
 ##### on Ubuntu 18.04:
@@ -32,16 +44,10 @@ apt install make python python-pip python-setuptools python-dev python-pytest \
         libppx-tools-ocaml-dev cppo
 ```
 
-If you also want to run bincat tests, install the following packages:
-* gcc-aarch64-linux-gnu
-* gcc-arm-linux-gnueabi
-* gcc-powerpc-linux-gnu
-* qemu
-
 ##### on Archlinux:
 Install packages first
 ```
-pacman -S base-devel ocaml-findlib opam rsync git python2-pytest python2-sphinx
+pacman -S base-devel ocaml-findlib opam rsync git python3-pytest python3-sphinx
 ```
 
 Add a symlink to caml includes:

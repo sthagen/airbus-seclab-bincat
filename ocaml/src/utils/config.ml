@@ -1,6 +1,6 @@
 (*
     This file is part of BinCAT.
-    Copyright 2014-2018 - Airbus
+    Copyright 2014-2021 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -18,12 +18,12 @@
 
 let ignore_unknown_relocations = ref false;;
 
-let unroll = ref 20;;
-let fun_unroll = ref 50;;
-let kset_bound = ref 10;;
+let unroll = ref 200;;
+let fun_unroll = ref 200;;
+let kset_bound = ref 50;;
 let loglevel = ref 3;;
 let module_loglevel: (string, int) Hashtbl.t = Hashtbl.create 5;;
-
+let taint_input = ref false;; (* if true then automatically taint functions with external input like getc *)
 let max_instruction_size = ref 16;;
 let external_symbol_max_size = ref 32;
 
@@ -53,6 +53,9 @@ type archi_t =
   | ARMv7
   | ARMv8 (* ARMv8-A *)
   | POWERPC
+  | RV32I (* risc-v integer 32 bits *)
+  | RV64I (* risc-v integer 64 bits *)
+
 
 let archi_to_string = function
   | X86 -> "x86"
@@ -60,6 +63,8 @@ let archi_to_string = function
   | ARMv7 -> "armv7"
   | ARMv8 -> "armv8"
   | POWERPC -> "powerpc"
+  | RV32I -> "RV32I"
+  | RV64I -> "RV64I"
 
 let architecture = ref X86;;
 
@@ -109,6 +114,7 @@ type call_conv_t =
   | SVR (* PowerPC *)
   | SYSV (* x64 SystemV *)
   | MS (* x64 Microsoft *)
+  | RISCVI (* risc v without floating point hardware *)
 
 let call_conv_to_string cc =
   match cc with
@@ -119,7 +125,11 @@ let call_conv_to_string cc =
   | SVR -> "SVR"
   | SYSV -> "SYSV"
   | MS -> "MS"
+  | RISCVI -> "RISC V integer"
 
+(* MPX extension *)
+let mpx = ref false
+        
 let call_conv = ref CDECL
 
 let ep = ref Z.zero
@@ -128,6 +138,8 @@ let address_sz = ref 32
 let operand_sz = ref 32
 let size_of_long () = !operand_sz
 let stack_width = ref 32
+let address_format = ref "%x"
+let address_format0x = ref "%#x"
 
 let gdt: (Z.t, Z.t) Hashtbl.t = Hashtbl.create 19
 
@@ -141,6 +153,13 @@ let char_of_null_cst () = Char.chr (Z.to_int !null_cst)
 (* used for powerpc mfspr *)
 let processor_version = ref 0
 
+type os_t =
+  | Windows
+  | Linux
+  | Unknown_os
+
+let os = ref Unknown_os
+       
 (* if true then an interleave of backward then forward analysis from a CFA will be processed *)
 (** after the first forward analysis from binary has been performed *)
 let interleave = ref false
@@ -261,6 +280,8 @@ type argv_config_t = {
     no_state : bool option ref ;
     filepath : string option ref;
     entrypoint : Z.t option ref ;
+    loglevel : int option ref;
+    dumps : string list ref;
   }
 
 let argv_options : argv_config_t = {
@@ -268,6 +289,8 @@ let argv_options : argv_config_t = {
     no_state = ref None ;
     filepath = ref None ;
     entrypoint = ref None ;
+    loglevel = ref None ;
+    dumps = ref [];
   }
 
 
@@ -279,7 +302,9 @@ let apply_option (opt:'a ref) (optval:'a option ref) =
 let apply_arg_options () =
   apply_option ignore_unknown_relocations argv_options.ignore_unknown_relocations;
   apply_option binary argv_options.filepath;
-  apply_option ep argv_options.entrypoint
+  apply_option ep argv_options.entrypoint;
+  apply_option loglevel argv_options.loglevel;
+  dumps := !(argv_options.dumps) @ !dumps
 
 
 let clear_tables () =

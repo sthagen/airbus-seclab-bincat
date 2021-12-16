@@ -3,9 +3,17 @@ GITVERSION:=$(shell git describe --dirty)
 LIBDIR=$(DESTDIR)/$(PREFIX)/lib/
 BINDIR=$(DESTDIR)/$(PREFIX)/bin/
 
-CPPO_VER=-V OCAML:$(shell ocamlc -vnum)
+CAMLC   ?=ocamlc
+CAMLOPT ?=ocamlopt
+CAMLLEX ?=ocamllex
+MENHIR  =menhir --explain
+CAMLDEP ?=ocamldep
+CAMLDOC ?=ocamldoc
+CAMLFIND ?=ocamlfind
+
+CPPO_VER=-V OCAML:$(shell $(CAMLC) -vnum)
 CPPO="cppo $(CPPO_VER)"
-CAMLLIBDIR:=$(shell ocamlc -where)
+CAMLLIBDIR:=$(shell $(CAMLC) -where)
 
 
 ML=\
@@ -37,6 +45,7 @@ ML=\
   disassembly/armv7Imports.ml\
   disassembly/armv8aImports.ml\
   disassembly/powerpcImports.ml\
+  disassembly/riscVImports.ml\
   frontend/lexer.ml\
   frontend/parser.ml\
   domains/env.ml\
@@ -47,15 +56,18 @@ ML=\
   domains/pointer.ml\
   domains/unrels.ml\
   domains/reduced_bit_tainting.ml\
-  domains/heap.ml\
+  domains/abstract_heap.ml\
   domains/reduced_unrel_typenv_heap.ml\
   disassembly/cfa.ml\
   disassembly/core_x86.ml\
   disassembly/armv7.ml\
   disassembly/armv8A.ml\
   disassembly/powerpc.ml\
+  disassembly/risc_v.ml\
+  fixpoint/forward.ml\
+  fixpoint/backward.ml\
   fixpoint/interpreter.ml\
-  bincat_ver.ml \
+  bincat_ver.ml\
   main.ml
 
 MLI=\
@@ -67,7 +79,7 @@ MLI=\
   domains/domain.mli\
   disassembly/cfa.mli\
   disassembly/decoder.mli\
-  fixpoint/stubs.mli
+
 
 
 DEPS-armv8A := armv8A_ppx
@@ -88,24 +100,17 @@ DEPS-reduced_unrel_typenv_heap := npk/c2newspeak/typedC.cmi npk/newspeak/newspea
 OPTS-reduced_unrel_typenv_heap := -I npk/c2newspeak -I npk/newspeak
 
 
-EXTLIB := nums str unix graph zarith bigarray
-PACKAGES := ocamlgraph zarith num
+EXTLIB := str unix graph zarith bigarray
+PACKAGES := ocamlgraph zarith
 
-EXTLIBINCL := $(foreach P,$(PACKAGES), -I $(shell ocamlfind query $(P)))
+EXTLIBINCL := $(foreach P,$(PACKAGES), -I $(shell $(CAMLFIND) query $(P)))
 LIBINCL = $(EXTLIBINCL) -I data-struct -I domains -I utils -I disassembly -I frontend -I loaders -I fixpoint
 
 #  W58: no cmx file was found in path for module Z
 #  -> not really a problem.
 #  W42: use of XXX relies on type-directed disambiguation
 #  -> not really a pb
-CAMLOPTIONS = -g -w Ael -warn-error +a-3-7-50-42-44-58 -w -42 -w -58
-
-CAMLC   =ocamlc
-CAMLOPT =ocamlopt
-CAMLLEX =ocamllex
-MENHIR  =menhir --explain
-CAMLDEP =ocamldep
-CAMLDOC =ocamldoc
+CAMLOPTIONS = -g -w Ael -warn-error +a-3-7-50-42-44-58 -w -42 -w -58 -w -67
 
 EXEOPT=bincat
 EXEBYTE=bincat.byte
@@ -160,7 +165,7 @@ all: $(LIBNAME) $(EXENAME)
 endif
 
 armv8A_ppx: disassembly/armv8A_ppx.ml
-	$(CAMLOPT) -pp $(CPPO) -warn-error -33-9-17 -I `ocamlfind query ppx_tools` -I +compiler-libs -o armv8A_ppx  str.cmxa ocamlcommon.cmxa ppx_tools.cmxa $+
+	$(CAMLOPT) -pp $(CPPO) -warn-error -33-9-17 -I `$(CAMLFIND) query ppx_tools` -I +compiler-libs -o armv8A_ppx  str.cmxa ocamlcommon.cmxa ppx_tools.cmxa $+
 
 $(LIBNAME): $(NPKLIB) $(OBJ)
 	rm -f $(BINCATOBJ)
@@ -197,7 +202,7 @@ npk/newspeak/newspeak.cmi:
 	$(CAMLCOMPIL) $(CAMLOPTIONS) $(LIBINCL) $(OPTS-$(*F)) -c $*.mli
 
 %.cmx: %.ml $$(DEPS-$$(*F))
-	$(CAMLOPT) $(CAMLOPTIONS) $(LIBINCL) $(OPTS-$(*F)) -c $*.ml
+	$(CAMLOPT) -pp $(CPPO) $(CAMLOPTIONS) $(LIBINCL) $(OPTS-$(*F)) -c $*.ml
 
 %.cmo: %.ml $$(DEPS-$$(*F))
 	$(CAMLC) $(CAMLOPTIONS) $(LIBINCL) $(OPTS-$(*F)) -c $*.ml
@@ -230,7 +235,7 @@ install: $(LIBNAME) $(EXENAME)
 
 .depend: $(ML) $(MLI)
 	rm -f .depend
-	-$(CAMLDEP) $(LIBINCL) -slash $(CAMLDEPOPT) $+ > .depend
+	-$(CAMLDEP) -pp $(CPPO) $(LIBINCL) -slash $(CAMLDEPOPT) $+ > .depend
 
 doc: $(ML) $(MLI)
 	@mkdir -p $(DOCPATH)/html

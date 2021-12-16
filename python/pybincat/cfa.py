@@ -17,14 +17,20 @@
 """
 
 import subprocess
-import ConfigParser
+try:
+    import configparser as ConfigParser
+except ImportError:
+    import ConfigParser
 from collections import defaultdict
 import re
 from pybincat.tools import parsers
 from pybincat import PyBinCATException
 import tempfile
 import functools
-
+# Python 2/3 compat
+import sys
+if sys.version_info > (2, 8):
+    long = int
 
 def reg_len(regname):
     """
@@ -62,7 +68,7 @@ def reg_len(regname):
             "esi": 32, "edi": 32, "esp": 32, "ebp": 32,
             "ax": 16, "bx": 16, "cx": 16, "dx": 16, "si": 16, "di": 16,
             "sp": 16, "bp": 16, "cs": 16, "ds": 16, "es": 16, "ss": 16,
-            "fs": 16, "gs": 16,
+            "fs": 16, "gs": 16, "fs_base": 64, "gs_base": 64,
             "iopl": 2,
             "mxcsr_fz": 1, "mxcsr_round": 2, "mxcsr_pm": 1, "mxcsr_um": 1,
             "mxcsr_om": 1, "mxcsr_zm": 1, "mxcsr_dm": 1, "mxcsr_im": 1,
@@ -103,8 +109,24 @@ def reg_len(regname):
             "r24": 32, "r25": 32, "r26": 32, "r27": 32, "r28": 32, "r29": 32,
             "r30": 32, "r31": 32, "lr": 32, "ctr": 32, "cr": 32,
             "tbc": 7, "so": 1, "ov": 1, "ca": 1}[regname]
+    elif CFA.arch.lower() == "rv32i":
+        return {
+            "x0": 32, "x1": 32, "x2": 32, "x3": 32, "x4": 32, "x5": 32,
+            "x6": 32, "x7": 32, "x8": 32, "x9": 32, "x10": 32, "x11": 32,
+            "x12": 32, "x13": 32, "x14": 32, "x15": 32, "x16": 32, "x17": 32,
+            "x18": 32, "x19": 32, "x20": 32, "x21": 32, "x22": 32, "x23": 32,
+            "x24": 32, "x25": 32, "x26": 32, "x27": 32, "x28": 32, "x29": 32,
+            "x30": 32, "x31": 32 }[regname]
+    elif CFA.arch.lower() == "rv64i":
+        return {
+            "x0": 64, "x1": 64, "x2": 64, "x3": 64, "x4": 64, "x5": 64,
+            "x6": 64, "x7": 64, "x8": 64, "x9": 64, "x10": 64, "x11": 64,
+            "x12": 64, "x13": 64, "x14": 64, "x15": 64, "x16": 64, "x17": 64,
+            "x18": 64, "x19": 64, "x20": 64, "x21": 64, "x22": 64, "x23": 64,
+            "x24": 64, "x25": 64, "x26": 64, "x27": 64, "x28": 64, "x29": 64,
+            "x30": 64, "x31": 64 }[regname]
     else:
-        raise KeyError("Unkown arch %s" % CFA.arch)
+        raise KeyError("Unknown arch %s" % CFA.arch)
 
 
 #: maps short region names to pretty names
@@ -239,7 +261,7 @@ class CFA(object):
         return cls.parse(outfname, logs=logfname)
 
     def _toValue(self, eip, region=""):
-        if type(eip) in [int, long]:
+        if isinstance(eip, (int, long)):
             addr = Value(region, eip, 0)
         elif type(eip) is Value:
             addr = eip
@@ -324,11 +346,17 @@ class Node(object):
             taintsrc = ["t-" + str(maxtaintsrcid)]
         else:
             # v0.7+ format, tainted
-            taintsrc = map(str.strip, taintedstr.split(','))
+            try:
+                taintsrc = list(map(unicode.strip, taintedstr.split(',')))
+            except NameError:
+                taintsrc = list(map(str.strip, taintedstr.split(',')))
             tainted = True
         new_node.tainted = tainted
         new_node.taintsrc = taintsrc
         return new_node
+
+    def default_unrel(self):
+        return self.unrels[self.default_unrel_id()]
 
     def default_unrel_id(self):
         ids = sorted(self.unrels.keys())
@@ -584,7 +612,7 @@ class Unrel(object):
         """
         self._regaddrs = {}
         self._regtypes = {}
-        for k, v in self._outputkv.iteritems():
+        for k, v in self._outputkv.items():
             if k == "description":
                 self.description = k
                 continue
@@ -709,7 +737,7 @@ class Unrel(object):
         ranges are sorted and coleasced
         """
         ranges = defaultdict(list)
-        for addr in self.regaddrs.keys():
+        for addr in list(self.regaddrs.keys()):
             if addr.region != 'reg':
                 ranges[addr.region].append((addr.value, addr.value+len(self.regaddrs[addr])-1))
         # Sort ranges
@@ -774,7 +802,7 @@ class Unrel(object):
         for (idx, v) in enumerate(val):
             addr = item.value + idx
             recorded = False
-            for e_key, e_val in self.regaddrs.items():
+            for e_key, e_val in list(self.regaddrs.items()):
                 # existing keys in regaddrs
                 if type(e_key.value) is str:
                     # e_key is a register, item is a memory address => skip
@@ -819,7 +847,7 @@ class Unrel(object):
     def __eq__(self, other):
         if set(self.regaddrs.keys()) != set(other.regaddrs.keys()):
             return False
-        for regaddr in self.regaddrs.keys():
+        for regaddr in list(self.regaddrs.keys()):
             if ((len(self.regaddrs[regaddr]) > 1) ^
                     (len(other.regaddrs[regaddr]) > 1)):
                 # split required, one of them only is split
@@ -865,7 +893,7 @@ class Unrel(object):
         for regaddr in self.list_modified_keys(other):
             region = regaddr.region
             address = regaddr.value
-            if regaddr.is_concrete() and isinstance(address, int):
+            if regaddr.is_concrete() and isinstance(address, (int, long)):
                 address = "%#08x" % address
             res.append("@@ %s %s @@" % (region, address))
             if (parent is not None) and (regaddr in parent.regaddrs):

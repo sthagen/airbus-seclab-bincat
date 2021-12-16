@@ -1,6 +1,6 @@
 (*
     This file is part of BinCAT.
-    Copyright 2014-2018 - Airbus
+    Copyright 2014-2020 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -45,12 +45,17 @@ let _ =
     "POWERPC", POWERPC;
     "ppc"    , POWERPC;
     "PPC"    , POWERPC;
+    "RV32I", RV32I;
+    "RV64I", RV64I;
+    "rv32i", RV32I;
+    "rv64i", RV64I;
     "processor_version", PROCESSOR_VERSION;
     "endianness", ENDIANNESS;
     "little", LITTLE;
     "big", BIG;
     "x86", X86;
     "x64", X64;
+    "IDA", IDA;
     (* settings tokens *)
     "mem_model", MEM_MODEL;
     "op_sz", OP_SZ;
@@ -66,6 +71,9 @@ let _ =
     "svr", SVR;
     "sysv", SYSV;
     "ms", MS;
+    "riscv", RISCV;
+    "RISCV", RISCV;
+    "RiscV", RISCV;
     (* analyzer tokens *)
     "ini_version", INI_VERSION;
     "unroll", UNROLL;
@@ -87,6 +95,8 @@ let _ =
     "es", ES;
     "fs", FS;
     "gs", GS;
+    "fs_base", FS_BASE;
+    "gs_base", GS_BASE;
     "analysis_ep", ENTRYPOINT;
     (* binary tokens *)
     "filepath", FILEPATH;
@@ -116,7 +126,14 @@ let _ =
     "fun_skip", FUN_SKIP;
     "TAINT_ALL", TAINT_ALL;
     "TAINT_NONE", TAINT_NONE;
-    "null", NULL
+    "null", NULL;
+    "os", OS;
+    "linux", LINUX;
+    "windows", WINDOWS;
+    "taint_input", TAINT_INPUT;
+    "MPX", MPX;
+    "enabled", ENABLED;
+    "disabled", DISABLED;
     ]
 
 let strip_int s =

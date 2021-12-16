@@ -19,7 +19,7 @@
     along with BinCAT.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import collections
+from collections.abc import MutableSequence
 import hashlib
 import logging
 import os
@@ -28,7 +28,10 @@ import sys
 import tempfile
 import traceback
 import zlib
-from ConfigParser import NoSectionError
+try:
+    from configparser import NoSectionError
+except ImportError:
+    from ConfigParser import NoSectionError
 
 # Ugly but IDA Python Linux doesn't have it !
 try:
@@ -116,9 +119,8 @@ class BincatPlugin(idaapi.plugin_t):
     # IDA API methods: init, run, term
     def init(self):
         info = idaapi.get_inf_structure()
-        # IDA 6/7 compat
-        procname = info.procname if hasattr(info, 'procname') else info.get_proc_name()[0]
-        if procname != 'metapc' and procname != 'ARM' and procname != 'PPC':
+        procname = info.procname
+        if procname != 'metapc' and procname != 'ARM' and procname != 'ARMB' and procname != 'PPC':
             bc_log.info("CPU '%s' is not supported, not loading BinCAT", procname)
             return idaapi.PLUGIN_SKIP
         try:
@@ -225,7 +227,7 @@ class LocalAnalyzerTimer(object):
         self.qprocess = qprocess
         self.timer = idaapi.register_timer(self.interval, self)
         if self.timer is None:
-            raise RuntimeError, "Failed to register timer"
+            raise RuntimeError("Failed to register timer")
 
     def __call__(self):
         if idaapi.user_cancelled():
@@ -255,7 +257,7 @@ class LocalAnalyzer(Analyzer, QtCore.QProcess):
 
     def generate_tnpk(self, fname=None, destfname=None):
         if fname:
-            imports_data = open(fname, 'rb').read()
+            imports_data = open(fname, 'r').read()
         else:
             imports_data = ""
         try:
@@ -325,7 +327,7 @@ class LocalAnalyzer(Analyzer, QtCore.QProcess):
         bc_log.info(str(self.readAllStandardError()))
         bc_log.info("---- logfile ---------------")
         if os.path.exists(self.logfname):
-            with open(self.logfname, 'rb') as f:
+            with open(self.logfname, 'r') as f:
                 log_lines = f.readlines()
             log_lines = dedup_loglines(log_lines, max=100)
             if len(log_lines) > 100:
@@ -369,7 +371,7 @@ class WebAnalyzer(Analyzer):
         if not fname:
             headers_data = idabincat.npkgen.NpkGen().get_header_data()
             fname = os.path.join(self.path, "ida_generated_headers.h")
-            with open(fname, 'wb') as f:
+            with open(fname, 'w') as f:
                 f.write(headers_data)
         sha256 = self.sha256_digest(fname)
         if not self.upload_file(fname, sha256):
@@ -386,7 +388,7 @@ class WebAnalyzer(Analyzer):
         sha256 = res['sha256']
         npk_contents = self.download_file(sha256)
         npk_fname = os.path.join(self.path, "headers.npk")
-        with open(npk_fname, 'wb') as f:
+        with open(npk_fname, 'w') as f:
             f.write(npk_contents)
         return npk_fname
 
@@ -399,7 +401,7 @@ class WebAnalyzer(Analyzer):
             return
         # create temporary AnalyzerConfig to replace referenced file names with
         # sha256 of their contents
-        with open(self.initfname, 'rb') as f:
+        with open(self.initfname, 'r') as f:
             temp_config = AnalyzerConfig.load_from_str(f.read())
         # patch filepath - set filepath to sha256, upload file
         sha256 = self.sha256_digest(temp_config.binary_filepath)
@@ -447,11 +449,11 @@ class WebAnalyzer(Analyzer):
                          % self.download_file(files["stdout.txt"]))
             if not files["out.ini"]:  # try to parse out.ini if it exists
                 return
-        with open(self.outfname, 'wb') as outfp:
+        with open(self.outfname, 'w') as outfp:
 
             outfp.write(self.download_file(files["out.ini"]))
         analyzer_log_contents = self.download_file(files["analyzer.log"])
-        with open(self.logfname, 'wb') as logfp:
+        with open(self.logfname, 'w') as logfp:
             logfp.write(analyzer_log_contents)
         bc_log.info("---- stdout+stderr ----------------")
         bc_log.info(self.download_file(files["stdout.txt"]))
@@ -468,7 +470,7 @@ class WebAnalyzer(Analyzer):
         bc_log.info("----------------------------")
         if "cfaout.marshal" in files:
             # might be absent (ex. when analysis failed, or not requested)
-            with open(self.cfaoutfname, 'wb') as cfaoutfp:
+            with open(self.cfaoutfname, 'w') as cfaoutfp:
                 cfaoutfp.write(self.download_file(files["cfaout.marshal"]))
         self.finish_cb(self.outfname, self.logfname, self.cfaoutfname)
 
@@ -543,7 +545,7 @@ class State(object):
         self.overrides = CallbackWrappedList()
         #: list of [@ or function names (str)]
         self.nops = CallbackWrappedList()
-        #: list of [@ or function names (str), arg_ng, ret_val]
+        #: list of [@ or function names (str), arg_nb, ret_val]
         self.skips = CallbackWrappedList()
         #: list of (name, config)
         self.configurations = AnalyzerConfigurations(self)
@@ -552,6 +554,7 @@ class State(object):
         #: filepath to last dumped remapped binary
         self.remapped_bin_path = None
         self.remap_binary = True
+        self.remapped_sections = None
         # for debugging purposes, to interact with this object from the console
         global bc_state
         bc_state = self
@@ -579,9 +582,9 @@ class State(object):
             path = tempfile.mkdtemp(suffix='bincat')
             outfname = os.path.join(path, "out.ini")
             logfname = os.path.join(path, "analyzer.log")
-            with open(outfname, 'wb') as outfp:
+            with open(outfname, 'w') as outfp:
                 outfp.write(self.netnode["out.ini"])
-            with open(logfname, 'wb') as logfp:
+            with open(logfname, 'w') as logfp:
                 logfp.write(self.netnode["analyzer.log"])
             if "current_ea" in self.netnode:
                 ea = self.netnode["current_ea"]
@@ -593,6 +596,10 @@ class State(object):
             fname = self.netnode["remapped_bin_path"]
             if os.path.isfile(fname):
                 self.remapped_bin_path = fname
+                if "remapped_sections" in self.netnode:
+                    self.remapped_sections = self.netnode["remapped_sections"]
+            else:
+                bc_log.warning("cannot find remapped binary %s", fname)
         if "remap_binary" in self.netnode:
             self.remap_binary = self.netnode["remap_binary"]
 
@@ -623,12 +630,14 @@ class State(object):
             # XXX add user preference for saving to idb? in that case, store
             # reference to marshalled cfa elsewhere
             bc_log.info("Storing analysis results to idb...")
-            with open(outfname, 'rb') as f:
+            with open(outfname, 'r') as f:
                 self.netnode["out.ini"] = f.read()
-            with open(logfname, 'rb') as f:
+            with open(logfname, 'r') as f:
                 self.netnode["analyzer.log"] = f.read()
             if self.remapped_bin_path:
                 self.netnode["remapped_bin_path"] = self.remapped_bin_path
+                if self.remapped_sections:
+                    self.netnode["remapped_sections"] = self.remapped_sections
             self.netnode["remap_binary"] = self.remap_binary
             if cfaoutfname is not None and os.path.isfile(cfaoutfname):
                 with open(cfaoutfname, 'rb') as f:
@@ -664,7 +673,7 @@ class State(object):
         self.netnode["current_ea"] = current_ea
         if not cfa:
             return
-        for addr, nodeids in cfa.addr_nodes.items():
+        for addr, nodeids in list(cfa.addr_nodes.items()):
             if hasattr(idaapi, "user_cancelled") and idaapi.user_cancelled() > 0:
                 bc_log.info("User cancelled!")
                 idaapi.hide_wait_box()
@@ -680,7 +689,10 @@ class State(object):
                     tainted = True
                     if node.taintsrc:
                         # Take the first one
-                        taint_id = int(node.taintsrc[0].split("-")[1])
+                        try:
+                            taint_id = int(node.taintsrc[0].split("-")[1])
+                        except IndexError: # Taint is TOP
+                            taint_id = 0
                     break
 
             if tainted:
@@ -774,7 +786,7 @@ class State(object):
                 bc_log.error("No marshalled CFA has been recorded - run a "
                              "forward analysis first.")
                 return
-            with open(self.analyzer.cfainfname, 'wb') as f:
+            with open(self.analyzer.cfainfname, 'w') as f:
                 f.write(self.last_cfaout_marshal)
         # Set correct file names
         # Note: bincat_native expects a filename for in_marshalled_cfa_file -
@@ -855,8 +867,14 @@ class State(object):
         else:
             self.start_analysis()
 
+    def add_or_replace_override(self, ea, htext, mask):
+        for idx, (e, h, _) in enumerate(self.overrides):
+            if e == ea and h == htext:
+                del self.overrides[idx]
+        self.overrides.append((ea, htext, mask))
 
-class CallbackWrappedList(collections.MutableSequence):
+
+class CallbackWrappedList(MutableSequence):
     """
     Acts as a List object, wraps write access with calls to properly invalidate
     models associated with View GUI objects.

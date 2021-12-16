@@ -1,6 +1,6 @@
 """
     This file is part of BinCAT.
-    Copyright 2014-2017 - Airbus Group
+    Copyright 2014-2021 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -15,7 +15,7 @@
     You should have received a copy of the GNU Affero General Public License
     along with BinCAT.  If not, see <http://www.gnu.org/licenses/>.
 """
-from __future__ import absolute_import
+
 import ctypes
 import collections
 import functools
@@ -24,20 +24,28 @@ import os
 import os.path
 import sys
 import re
-import StringIO
-import ConfigParser
+from io import StringIO
+try:
+    import configparser as ConfigParser
+except ImportError:
+    import ConfigParser
 import logging
 import idaapi
 import idautils
 import ida_segment
+import ida_kernwin
 import idabincat.netnode
+from builtins import bytes
 from idabincat.plugin_options import PluginOptions
+# Python 2/3 compat
+if sys.version_info > (2, 8):
+    long = int
 
 # Logging
 bc_log = logging.getLogger('bincat-cfg')
 bc_log.setLevel(logging.INFO)
 
-X64_GPR = ['rax', 'rcx', 'rdx', 'rbx', 'rbp', 'rsi', 'rdi', 'rsp']+["r%d" % d for d in xrange(8, 16)]
+X64_GPR = ['rax', 'rcx', 'rdx', 'rbx', 'rbp', 'rsi', 'rdi', 'rsp']+["r%d" % d for d in range(8, 16)]
 X86_GPR = ['eax', 'ecx', 'edx', 'ebx', 'ebp', 'esi', 'edi', 'esp']
 
 
@@ -90,7 +98,11 @@ class ConfigHelpers(object):
     def string_decode(string):
         if idaapi.get_kernel_version()[0] == '7':
             # IDA 7 only has UTF-8 strings
-            string_u = string.decode('UTF-8')
+            try:
+                string_u = string.decode('UTF-8')
+            except AttributeError:
+                # Python 3
+                string_u = string
         else:
             # IDA 6 uses the system locale
             # on Linux it's usually UTF-8 but we can't be sure
@@ -101,9 +113,7 @@ class ConfigHelpers(object):
 
     @staticmethod
     def askfile(types, prompt):
-        # IDA 6/7 compat
-        askfile = idaapi.ask_file if hasattr(idaapi, 'ask_file') else idaapi.askfile_c
-        fname = askfile(1, types, prompt)
+        fname = ida_kernwin.ask_file(1, types, prompt)
         return ConfigHelpers.string_decode(fname)
 
     # Helper that returns an Unicode string with the file path
@@ -168,7 +178,7 @@ class ConfigHelpers(object):
     def get_bitness(ea):
         seg = idaapi.getseg(ea)
         if not seg:
-            seg = idaapi.getseg(idautils.Segments().next())
+            seg = idaapi.getseg(next(idautils.Segments()))
         bitness = seg.bitness
         return {0: 16, 1: 32, 2: 64}[bitness]
 
@@ -195,9 +205,8 @@ class ConfigHelpers(object):
         # heuristic entry point must be in the code section
         for n in range(idaapi.get_segm_qty()):
             seg = idaapi.getnseg(n)
-            # IDA 6/7 compat
-            start_ea = seg.start_ea if hasattr(seg, "start_ea") else seg.startEA
-            end_ea = seg.end_ea if hasattr(seg, "end_ea") else seg.endEA
+            start_ea = seg.start_ea
+            end_ea = seg.end_ea
             if seg.type == idaapi.SEG_CODE and start_ea <= entrypoint < end_ea:
                 # TODO : check PE/ELF for **physical** (raw) section size
                 return start_ea, end_ea
@@ -278,7 +287,7 @@ class ConfigHelpers(object):
         if arch == 'x64':
             if reg in X64_GPR:
                 return 64
-            if reg in ["xmm%d" % d for d in xrange(0, 16)]:
+            if reg in ["xmm%d" % d for d in range(0, 16)]:
                 return 128
             if reg in ['cf', 'pf', 'af', 'zf', 'sf', 'tf', 'if', 'of', 'nt',
                        'rf', 'vm', 'ac', 'vif', 'vip', 'id', 'df']:
@@ -323,7 +332,7 @@ class ConfigHelpers(object):
         if arch == "x64":
             for name in X64_GPR:
                 regs.append([name, "0", "0xFFFFFFFFFFFFFFFF", ""])
-            if name in ["xmm%d" % d for d in xrange(0, 16)]:
+            if name in ["xmm%d" % d for d in range(0, 16)]:
                 regs.append([name, "0", "0x"+"F"*32, ""])
             regs.append(["rsp", "0xb8001000", "", ""])
             for name in ["cf", "pf", "af", "zf", "sf", "tf", "if", "of", "nt",
@@ -482,7 +491,7 @@ class AnalyzerConfig(object):
         self._config.optionxform = str
         # make sure all sections are created
         for section in ("analyzer", "program",
-                        "sections", "state", "imports"):
+                        "sections", "state", "imports", "IDA"):
             if not self._config.has_section(section):
                 self._config.add_section(section)
 
@@ -512,8 +521,13 @@ class AnalyzerConfig(object):
     def binary_filepath(self):
         # remove quotes
         value = self._config.get('program', 'filepath')
+        # Python 2/3 compat
+        try:
+            value = value.decode('utf-8')
+        except AttributeError:
+            pass
         value = value.replace('"', '')
-        return value.decode('utf-8')
+        return value
 
     @property
     def in_marshalled_cfa_file(self):
@@ -546,16 +560,88 @@ class AnalyzerConfig(object):
     def state(self):
         return self.init_state
 
+    @property
+    def overrides(self):
+        if 'override' not in self._config.sections():
+            return []
+        res = []
+        for ea, overrides in self._config.items('override'):
+            ea = int(ea, 16)
+            for override in overrides.split(';'):
+                override = override.strip()
+                if not override:
+                    continue
+                dest, val = override.split(',')
+                dest = dest.strip()
+                val = val.strip()
+                res.append((ea, dest, val))
+        return res
+
+    @property
+    def skips(self):
+        if not self._config.has_option('analyzer', 'fun_skip'):
+            return []
+        skipstr = self._config.get('analyzer', 'fun_skip')
+        idx = 0
+        res = []
+        err = False
+        while True:
+            try:
+                allow_value_err = False
+                val = []
+                # identify @ or function name
+                endidx = skipstr.index('(', idx)
+                val.append(skipstr[idx:endidx].strip())
+                idx = endidx + 1
+                # identify arg_nb
+                endidx = skipstr.index(',', idx)
+                val.append(skipstr[idx:endidx].strip())
+                idx = endidx + 1
+                # identify ret_val
+                endidx = skipstr.index(')', idx)
+                val.append(skipstr[idx:endidx].strip())
+                idx = endidx + 1
+                res.append(tuple(val))
+                allow_value_err = True
+                idx = 1 + skipstr.index(',', idx)
+            except ValueError:
+                err = not allow_value_err
+                break
+            except:
+                err = True
+        if err:
+            bc_log.error("Error while parsing fun_skip from config", exc_info=True)
+            return []
+        return res
+
+    @property
+    def nops(self):
+        if not self._config.has_option('analyzer', 'nop'):
+            return []
+        return [(n,) for n in self._config.get('analyzer', 'nop').split(', ')]
+
+    # Remap binary properties
+    @property
+    def remap(self):
+        if not self._config.has_option('IDA', 'remap_binary'):
+            return False
+        return self._config.get('IDA', 'remap_binary').lower() == "true";
+
+    @remap.setter
+    def remap(self, value):
+        self._config.set('IDA', 'remap_binary', value)
+
+
     # Configuration modification functions - edit currently loaded config
     @analysis_ep.setter
     def analysis_ep(self, value):
-        if type(value) in (int, long):
+        if isinstance(value, (int, long)):
             value = "0x%X" % value
         self._config.set('analyzer', 'analysis_ep', value)
 
     @stop_address.setter
     def stop_address(self, value):
-        if type(value) in (int, long):
+        if isinstance(value, (int, long)):
             value = "0x%X" % value
         if value is None or value == "":
             self._config.remove_option('analyzer', 'cut')
@@ -620,12 +706,12 @@ class AnalyzerConfig(object):
             # 2. Add sections from overrides argument
             ov_by_eip = collections.defaultdict(set)
             for (eip, register, value) in overrides:
-                ov_by_eip[eip].add("%s, %s;" % (register, value))
+                ov_by_eip[eip].add("%s, %s" % (register, value))
 
             # 3. Add to config
-            for eip, ov_set in ov_by_eip.items():
+            for eip, ov_set in list(ov_by_eip.items()):
                 hex_addr = "0x%x" % eip
-                self._config.set("override", hex_addr, ''.join(ov_set))
+                self._config.set("override", hex_addr, ';'.join(ov_set))
         else:  # backward
             # 2. Empty state section
             self._config.remove_section("state")
@@ -662,7 +748,10 @@ class AnalyzerConfig(object):
 
     @staticmethod
     def load_from_str(string):
-        sio = StringIO.StringIO(string)
+        if sys.version_info < (2, 8):
+            sio = StringIO(unicode(string))
+        else:
+            sio = StringIO(string)
         parser = ConfigParser.RawConfigParser()
         parser.optionxform = str
         parser.readfp(sio)
@@ -672,7 +761,9 @@ class AnalyzerConfig(object):
         # OCaml can only handle "local" encodings for file name
         # So, ugly code following
         binpath = self.binary_filepath
-        local_binpath = ('"%s"' % binpath).encode(sys.getfilesystemencoding())
+        # TODO FIXME (python3 ...)
+        # local_binpath = ('"%s"' % binpath).encode(sys.getfilesystemencoding())
+        local_binpath = '"%s"' % binpath
         self._config.set('program', 'filepath', local_binpath)
         with open(filepath, 'w') as configfile:
             self._config.write(configfile)
@@ -683,38 +774,16 @@ class AnalyzerConfig(object):
         self._config.add_section('state')
         for key, val in self.init_state.as_kv():
             self._config.set('state', key, val)
-        sio = StringIO.StringIO()
+        sio = StringIO()
         self._config.write(sio)
         sio.seek(0)
         return sio.read()
 
     def edit_str(self):
         """
-        Return a text representation suitable for user edition
+        Return a text representation suitable for user edition.
+        Before calling this, caller must call update_overrides.
         """
-        # replaces overrides, nops & skips with warnings. The correct values
-        # will be set before analysis is run
-        if self.analysis_method == 'backward':
-            section = 'state'
-        else:
-            # forward
-            section = 'override'
-        self._config.remove_section(section)
-        # empty section
-        self._config.add_section(section)
-        # hack to add comments
-        self._config.set(
-            section,
-            '; This will be overriden with values from the BinCAT '
-            'Overrides view since the analysis will run in %s mode ;' %
-            self.analysis_method, '')
-
-        self._config.set(
-            'analyzer', 'nop', '; This will be overriden with values '
-            'from the BinCAT Overrides view')
-        self._config.set(
-            'analyzer', 'fun_skip', '; This will be overriden with values '
-            'from the BinCAT Overrides view')
         return str(self)
 
     @staticmethod
@@ -785,7 +854,7 @@ class AnalyzerConfig(object):
         imports = ConfigHelpers.get_imports()
         # [import] section
         config.add_section('imports')
-        for ea, imp in imports.iteritems():
+        for ea, imp in imports.items():
             if imp[0]:
                 name = "%s, \"%s\"" % imp
             else:
@@ -884,7 +953,7 @@ class AnalyzerConfigurations(object):
     def _load_from_idb(self):
         self._configs = self._netnode.get('analyzer_configs', dict())
         self._prefs = {}
-        for k, v in self._netnode.get('analyzer_prefs', dict()).items():
+        for k, v in list(self._netnode.get('analyzer_prefs', dict()).items()):
             self._prefs[int(k)] = v
         for k, v in list(self._prefs.items()):
             if v not in self._configs:
@@ -903,7 +972,7 @@ class AnalyzerConfigurations(object):
         Get named config, or preferred config if defined for this address.
         Returns an AnalyzerConfig instance, or None
         """
-        if isinstance(name_or_address, int):
+        if isinstance(name_or_address, (int, long)):
             # address
             name = self._prefs.get(name_or_address, None)
             if not name:

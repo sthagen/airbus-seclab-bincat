@@ -1,6 +1,6 @@
 (*
     This file is part of BinCAT.
-    Copyright 2014-2018 - Airbus
+    Copyright 2014-2020 - Airbus
 
     BinCAT is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License as published by
@@ -16,6 +16,7 @@
     along with BinCAT.  If not, see <http://www.gnu.org/licenses/>.
 *)
 
+
 (* need to have OCaml 4.04 to have it in standard library :( *)
 let split_on_char sep str =
   let l = String.length str in
@@ -29,6 +30,13 @@ let split_on_char sep str =
       else
         split p1 (p2+1) in
   split 0 0;;
+
+(** Z address to hex string, padded using architecture address size *)
+let zaddr_to_string zaddr = Z.format !Config.address_format zaddr
+
+(** Z address to hex string, padded using architecture address size,
+    starting with 0x *)
+let zaddr_to_string0x zaddr = Z.format !Config.address_format0x zaddr
 
 
 (** log facilities *)
@@ -93,15 +101,16 @@ module Make(Modname: sig val name : string end) = struct
 
   let trace adrs fmsg =
     if log_info2 () then
-        let pc = Data.Address.to_string adrs in
-    let msg = fmsg Printf.sprintf in
-        let rec log_trace strlist =
-          match strlist with
-          | [] -> ()
-          | h::l ->
-            Printf.fprintf !logfid  "[TRACE] %s: %s\n" pc h;
-            log_trace l in
-        log_trace (split_on_char '\n' msg) ;
+      let pc = Data.Address.to_string adrs in
+      let msg = fmsg Printf.sprintf in
+      let rec log_trace strlist =
+        match strlist with
+        | [] -> ()
+        | h::l ->
+           Printf.fprintf !logfid  "[TRACE] %s: %s\n" pc h;
+           log_trace l
+      in
+      log_trace (split_on_char '\n' msg);
     flush !logfid
 
   let info2 fmsg =
@@ -125,9 +134,10 @@ module Make(Modname: sig val name : string end) = struct
         | [ remain ] -> remain
         | h::l ->
            Printf.fprintf !logfid  "[STDOUT] %s\n" h;
-          log_stdout l in
+           log_stdout l
+      in
       let remain = log_stdout (split_on_char '\n' msg) in
-      stdout_remain := remain ;
+      stdout_remain := remain;
       if remain <> "" then info2 (fun p -> p "line buffered stdout=[%s]" remain);
     flush !logfid
 
@@ -156,7 +166,12 @@ module Make(Modname: sig val name : string end) = struct
     Printf.fprintf !logfid  "[ABORT] %s: %s\n" modname msg;
     Printexc.print_raw_backtrace !logfid (Printexc.get_callstack 100);
     flush !logfid;
+
+#if OCAML_VERSION < (4, 08, 0)
     flush Pervasives.stdout;
+#else
+    flush Stdlib.stdout;
+#endif
     raise (Exceptions.Error msg)
 
   let exc_and_abort e fmsg =
@@ -165,7 +180,11 @@ module Make(Modname: sig val name : string end) = struct
     Printf.fprintf !logfid  "%s\n" (Printexc.to_string e);
     Printexc.print_backtrace !logfid;
     flush !logfid;
+#if OCAML_VERSION < (4, 08, 0)
     flush Pervasives.stdout;
+#else
+    flush Stdlib.stdout;
+#endif
     raise (Exceptions.Error msg)
 
 
@@ -202,35 +221,53 @@ let close () =
   close_out !logfid
 
 (* message management *)
-type msg_id_t = int
-let compare_msg_id id1 id2 = id1 - id2
-let equal_msg_id id1 id2 = id1 = id2
-let msg_id_tbl: (msg_id_t, string) Hashtbl.t = Hashtbl.create 5
-let msg_id = ref 0
-let compare_msg_id_list l1 l2 =
-  let len1 = List.length l1 in
-  let len2 = List.length l2 in
-  let n = len1 - len2 in
-  if n <> 0 then n
-  else
-    begin
-      let n = ref 0 in
-      try
-        List.iter2 (fun id1 id2 ->
-            let r = compare_msg_id id1 id2 in
-            if r <> 0 then
-              begin
-                n := r;
-                raise Exit
-              end) l1 l2;
-        !n
-      with Exit -> !n
-    end
-                            
-let new_msg_id (msg: string): msg_id_t =
-  let id = !msg_id in
-  Hashtbl.add msg_id_tbl id msg;
-  msg_id := !msg_id + 1;
-  id
-  
-let get_msg_from_id id = Hashtbl.find msg_id_tbl id
+module History =
+  struct 
+    type t = int
+    let compare_msg_id id1 id2 = id1 - id2
+    let equal_msg_id id1 id2 = id1 = id2
+    let msg_id_tbl: (t, t list * string) Hashtbl.t = Hashtbl.create 5 (* the t list is the list of its ancestors *)
+    let msg_id = ref 0
+    let compare_msg_id_list l1 l2 =
+      let len1 = List.length l1 in
+      let len2 = List.length l2 in
+      let n = len1 - len2 in
+      if n <> 0 then n
+      else
+        begin
+          let n = ref 0 in
+          try
+            List.iter2 (fun id1 id2 ->
+                let r = compare_msg_id id1 id2 in
+                if r <> 0 then
+                  begin
+                    n := r;
+                    raise Exit
+                  end) l1 l2;
+            !n
+          with Exit -> !n
+        end
+      
+    let new_ (prev: t list) (msg: string): t =
+      let id = !msg_id in
+      Hashtbl.add msg_id_tbl id (prev, msg);
+      msg_id := !msg_id + 1;
+      id
+
+    let rec get_path id: t list list =
+      let preds, _msg = Hashtbl.find msg_id_tbl id in
+      if preds = [] then
+        []
+      else
+        List.fold_left (fun acc pred ->
+            let paths = List.map (fun p -> id::p) (get_path pred) in
+            paths @ acc
+          ) [] preds
+
+          
+      
+    let get_msg id =
+      let _preds, msg = Hashtbl.find msg_id_tbl id in
+      msg
+      
+  end

@@ -15,7 +15,10 @@
     You should have received a copy of the GNU Affero General Public License
     along with BinCAT.  If not, see <http://www.gnu.org/licenses/>.
 """
-import ConfigParser
+try:
+    import configparser as ConfigParser
+except ImportError:
+    import configparser
 import distutils.spawn
 import hashlib
 import os
@@ -132,11 +135,11 @@ def analyze():
 
     # validation: valid ini file + referenced binary file has already been
     # uploaded
-    config = ConfigParser.RawConfigParser()
+    config = configparser.RawConfigParser()
     config.optionxform = str
     try:
         config.readfp(init_file)
-    except ConfigParser.MissingSectionHeaderError:
+    except configparser.MissingSectionHeaderError:
         return flask.make_response(
             "Supplied init.ini file format is incorrect (missing section "
             "header).", 400)
@@ -152,7 +155,7 @@ def analyze():
                          ("analyzer", "analysis")]:
         try:
             config.get(section, key)
-        except ConfigParser.NoOptionError:
+        except configparser.NoOptionError:
             return flask.make_response(
                 "No %s key in [%s] section in supplied init.ini file."
                 % (section, key), 400)
@@ -168,7 +171,7 @@ def analyze():
         for hfname in headers_fname.split(','):
             if hfname:
                 input_files.append(hfname)
-    except ConfigParser.NoOptionError:
+    except configparser.NoOptionError:
         # this is not mandatory
         pass
     # remove double quotes that surround filenames
